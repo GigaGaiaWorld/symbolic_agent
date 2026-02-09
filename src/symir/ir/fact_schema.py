@@ -6,8 +6,45 @@ from dataclasses import dataclass
 from typing import Optional, Iterable
 import hashlib
 import json
+import os
+from pathlib import Path
+import tempfile
+
+from diskcache import Cache
 
 from symir.errors import SchemaError
+
+
+_PREDICATE_SCHEMA_CACHE_ENV = "SYMR_PREDICATE_SCHEMA_CACHE_DIR"
+_CACHE_ENV = "SYMR_CACHE_DIR"
+
+
+def _predicate_schema_cache_dir() -> Path:
+    env_dir = os.environ.get(_PREDICATE_SCHEMA_CACHE_ENV) or os.environ.get(_CACHE_ENV)
+    if env_dir:
+        return Path(env_dir).expanduser()
+    return Path(tempfile.gettempdir()) / "symir" / "predicate_schema_cache"
+
+
+def _open_predicate_schema_cache() -> Cache:
+    return Cache(str(_predicate_schema_cache_dir()))
+
+
+def cache_predicate_schema(schema: "PredicateSchema") -> None:
+    cache = _open_predicate_schema_cache()
+    try:
+        cache.set(schema.schema_id, schema.to_dict())
+    finally:
+        cache.close()
+
+
+def load_predicate_schemas_from_cache() -> list["PredicateSchema"]:
+    cache = _open_predicate_schema_cache()
+    try:
+        items = list(cache.values())
+    finally:
+        cache.close()
+    return [PredicateSchema.from_dict(item) for item in items]
 
 
 @dataclass(frozen=True)
@@ -54,6 +91,7 @@ class PredicateSchema:
             raise SchemaError("Predicate arity must match signature length.")
         if self.description is not None and not isinstance(self.description, str):
             raise SchemaError("Predicate description must be a string if provided.")
+        cache_predicate_schema(self)
 
     @property
     def schema_id(self) -> str:
