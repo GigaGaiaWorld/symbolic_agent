@@ -2,18 +2,6 @@
 
 Lightweight, IR-first logic representation and mapping. ProbLog is a plugin mapper.
 
-## Installation
-
-```bash
-pip install .
-```
-
-For editable installs during development:
-
-```bash
-pip install -e .
-```
-
 ## Components
 
 - `ir/`: Neutral, serializable IR types and fact schema.
@@ -157,10 +145,9 @@ rule = Rule(head=head, bodies=[body])
 text = ProbLogRenderer().render_rule(rule, RenderContext(schema=schema))
 ```
 
-### LibraryRuntime（可执行渲染）
+### LibraryRuntime (Executable Renderer)
 
-`LibrarySpec` 仅保存可序列化元数据。若需要直接可执行的后端渲染逻辑，可用 `LibraryRuntime`：
-
+`LibrarySpec` only stores serializable metadata. For directly executable backend rendering logic, use `LibraryRuntime`.
 ```python
 from symir.rule_ir import Library, LibrarySpec, LibraryRuntime
 
@@ -183,9 +170,9 @@ runtime.register(
 )
 ```
 
-### LLM 约束解码 Schema
+### LLM Constraint Decoding Schema
 
-如果你需要给 LLM 做结构化约束解码，使用：
+If you need to perform structured constraint decoding on an LLM, use:
 
 ```python
 from symir.rules.constraint_schemas import (
@@ -193,8 +180,9 @@ from symir.rules.constraint_schemas import (
     build_responses_schema,
 )
 
-# 约束解码仅生成 bodies（head 已由系统提供）
-# 可选传入 library 以允许库谓词/表达式
+# Constraint decoding only generates bodies (head is already provided by the system)
+# Optional library input to allow library predicates/expressions
+
 model = build_pydantic_rule_model(view, library=None, mode="compact")
 responses_schema = build_responses_schema(view, library=None, mode="compact")
 catalog = build_predicate_catalog(view, library=None)

@@ -3,7 +3,7 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "new_symbolic_agent"
+name = "symir"
 version = "0.1.0"
 description = "Lightweight, IR-first logic representation and mapping."
 readme = "README.md"
@@ -14,4 +14,4 @@ dependencies = ["pydantic>=2"]
 where = ["src"]
 
 [tool.setuptools.package-data]
-new_symbolic_agent = ["samples/*.csv", "examples/*.py"]
+symir = ["samples/*.csv", "examples/*.py"]
