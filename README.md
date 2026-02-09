@@ -91,7 +91,7 @@ problog_text = to_problog(program)
 
 ## Notes
 
-- Python 3.11+.
+- Python 3.10+.
 - Only standard library + `pydantic`.
 - Probabilistic rules are rendered as head annotations with a comment note.
 - CSV `prob_column` values may be empty; missing values default to `DEFAULT_PROB_VALUE = 1.0`.
