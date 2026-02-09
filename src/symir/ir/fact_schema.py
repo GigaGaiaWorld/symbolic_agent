@@ -41,7 +41,10 @@ def cache_predicate_schema(schema: "PredicateSchema") -> None:
 def load_predicate_schemas_from_cache() -> list["PredicateSchema"]:
     cache = _open_predicate_schema_cache()
     try:
-        items = list(cache.values())
+        if hasattr(cache, "values"):
+            items = list(cache.values())
+        else:
+            items = [cache[key] for key in cache]
     finally:
         cache.close()
     return [PredicateSchema.from_dict(item) for item in items]
