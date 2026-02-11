@@ -6,6 +6,8 @@ runtime concepts are:
 - `Fact` / `Rel`: schema definitions (structure only)
 - `FactLayer`: registry and validation for schemas
 - `Instance`: canonical representation of facts/relations (runtime data)
+- `Rule` / `Cond`: predicate + conditions (rule templates)
+- `Ref` / `Expr`: rule literals and expression nodes
 
 Below is a focused tutorial on how `Instance` works.
 
@@ -220,4 +222,164 @@ renders to `Var = predicate(...)` in Prolog/ProbLog.
 from symir.ir.expr_ir import Unify, Var, Ref
 
 expr = Unify(Var("Sub"), Ref(schema_id=person.schema_id, terms=[Var("SubName"), Var("SubAddr")]))
+```
+
+## Rules Tutorial
+
+Rules are pure data templates that combine a **predicate** (Fact/Rel) with one or
+more **conditions**. They do not execute by themselves; render them (ProbLog/Prolog/Datalog/Cypher)
+or validate them with `RuleValidator`.
+
+Core concepts:
+
+- `Rule(predicate=..., conditions=[...])`
+- `Cond(literals=[...], prob=...)`
+- `Ref(schema_id=..., terms=[...])` for predicate calls
+- `Expr(...)` for expression literals (`Unify`, `Call`, `If`, `NotExpr`, etc.)
+
+### 1) Basic fact rule
+
+```python
+from symir.ir.fact_schema import ArgSpec, Fact, FactLayer
+from symir.ir.expr_ir import Var, Const, Call, Ref
+from symir.ir.rule_schema import Rule, Cond, Expr
+
+person = Fact(
+    "person",
+    [ArgSpec("Name:string", role="key"), ArgSpec("Age:int")],
+)
+adult = Fact(
+    "adult",
+    [ArgSpec("Name:string", role="key")],
+)
+registry = FactLayer([person, adult])
+
+rule = Rule(
+    predicate=adult,
+    conditions=[
+        Cond(
+            literals=[
+                Ref(schema=person, terms=[Var("Name"), Var("Age")]),
+                Expr(Call("gt", [Var("Age"), Const(18)])),
+            ],
+            prob=0.9,
+        )
+    ],
+)
+```
+
+Notes:
+
+- `Ref(schema=person, ...)` will auto-validate arity and `Const` datatypes.
+- If you pass `schema_id` only, no immediate type validation occurs (use `RuleValidator`).
+- `Const` does not require `datatype`; if provided, it will be checked.
+
+### 2) Relation rule (Rel as head)
+
+`Rel` heads use the **derived signature** (sub_*/obj_* + props) for head variables.
+
+```python
+from symir.ir.fact_schema import Rel
+from symir.ir.expr_ir import Unify, Ref
+from symir.ir.rule_schema import Expr
+
+company = Fact("company", [ArgSpec("Company:string", role="key")])
+works_at = Rel(
+    "works_at",
+    sub=person,
+    obj=company,
+    props=[ArgSpec("since:int")],
+)
+
+rule = Rule(
+    predicate=works_at,
+    conditions=[
+        Cond(
+            literals=[
+                # reuse the same variable names as the head signature
+                Ref(schema=person, terms=[Var("sub_Name"), Var("sub_Age")]),
+                Ref(schema=company, terms=[Var("obj_Company")]),
+                Expr(Unify(Var("since"), Const(2020))),
+            ]
+        )
+    ],
+)
+```
+
+### 3) Expressions in conditions
+
+Use `Expr(...)` to wrap expression nodes:
+
+```python
+from symir.ir.expr_ir import If, Call, Unify, NotExpr
+
+cond = Cond(
+    literals=[
+        Ref(schema=person, terms=[Var("Name"), Var("Age")]),
+        Expr(If(
+            cond=Call("gt", [Var("Age"), Const(18)]),
+            then=Unify(Var("Adult"), Const(True)),
+            else_=Unify(Var("Adult"), Const(False)),
+        )),
+        Expr(NotExpr(Call("eq", [Var("Name"), Const("bob")]))),
+    ]
+)
+```
+
+### 4) Negation
+
+Two forms:
+
+- `Ref(..., negated=True)` for a negated predicate literal
+- `Expr(NotExpr(...))` for expression-level negation
+
+```python
+Cond(literals=[
+    Ref(schema=person, terms=[Var("Name"), Var("Age")], negated=True),
+    Expr(NotExpr(Call("eq", [Var("Name"), Const("bob")]))),
+])
+```
+
+Note: a negated `Ref` is only valid as a **literal**. You cannot embed a negated Ref inside `Expr`.
+
+### 5) Validation
+
+Use `RuleValidator` with a `FactView` (and optional `Library`) to enforce:
+
+- Ref predicates are allowed
+- arity matches
+- literal structure is valid
+
+```python
+from symir.rules.validator import RuleValidator
+
+view = registry.view([p.schema_id for p in registry.predicates()])
+RuleValidator(view).validate(rule)
+```
+
+### 6) Serialization
+
+`Rule.to_dict()` returns the predicate dict + `conditions`:
+
+```python
+payload = rule.to_dict()
+loaded = Rule.from_dict(payload)
+```
+
+### 7) LLM decoding (conditions-only)
+
+The strict decoding schemas only validate **conditions**, not the head. You provide
+the head predicate yourself when constructing a Rule.
+
+```python
+from symir.rules.constraint_schemas import build_responses_schema
+from symir.examples.parse_llm_response import resp_to_rule
+
+json_schema = build_responses_schema(view, mode="compact")
+rule = resp_to_rule(
+    resp,
+    head=adult,     # you supply the predicate
+    view=view,
+    mode="compact",
+)
 ```
