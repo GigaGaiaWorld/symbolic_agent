@@ -1067,23 +1067,28 @@ employment = Rel(
 )
 schema = FactLayer([person, company, employment])
 
-# head terms are auto-derived from employment.signature:
-# [sub_Name, obj_Company, Since, Title]
+# renderer rel-head convention:
+# [Sub, Obj, <prop vars...>]
+# endpoint keys remain in body literals.
 cond = Cond(
     literals=[
+        # structured binding style:
+        Expr(expr=Unify(Var("Sub"), Ref(person, [Var("sub_Name"), Var("sub_Addr")]))),
+        Expr(expr=Unify(Var("Obj"), Ref(company, [Var("obj_Company")]))),
+        # optional non-binding style:
         Ref(schema=person, terms=[Var("sub_Name"), Var("sub_Addr")]),
         Ref(schema=company, terms=[Var("obj_Company")]),
+        
         Expr(expr=Unify(Var("Since"), Const(2020))),
         Expr(expr=Unify(Var("Title"), Const("researcher"))),
         # optional structured binding style:
-        Expr(expr=Unify(Var("Sub"), Call("person", [Var("sub_Name"), Var("sub_Addr")]))),
-        Expr(expr=Unify(Var("Obj"), Call("company", [Var("obj_Company")]))),
+
     ],
     prob=0.7,
 )
 rule = Rule(predicate=employment, conditions=[cond])
 
-text = ProbLogRenderer().render_rule(rule, RenderContext(schema=schema))
+text = ProbLogRenderer().render_rule(rule, RenderContext(schema=factlayer, problog_var_mode="sanitize"))
 ```
 
 Rule conventions (data-template first):
@@ -1132,6 +1137,11 @@ Design/validation notes:
 - `Ref(...)` enforces arity against schema.
 - `Const(...)` is type-checked against referenced `ArgSpec.datatype`.
 - variable cross-literal type unification is currently not enforced globally.
+- for rel-head rendering, `ProbLogRenderer` uses `[Sub, Obj, <props...>]` (not flattened key fields).
+- ProbLog variable rendering is configurable:
+  - default: `sanitize` (auto converts invalid variable names to uppercase-leading valid tokens),
+  - per-rule override: `Rule(..., render_hints={"problog_var_mode": "error|sanitize|prefix|capitalize", "problog_var_prefix": "VAR_"})`,
+  - global default override: `RenderContext(..., problog_var_mode="...", problog_var_prefix="...")`.
 - `Ref` can appear inside `Expr` (boolean expression context).
 - negated `Ref` is supported as literal (`Ref(..., negated=True)`), but not inside expression rendering context.
 

@@ -1,7 +1,7 @@
 import unittest
 
-from symir.errors import ValidationError
-from symir.ir.fact_schema import ArgSpec, PredicateSchema, FactSchema
+from symir.errors import RenderError, ValidationError
+from symir.ir.fact_schema import ArgSpec, PredicateSchema, FactSchema, Rel
 from symir.ir.expr_ir import Var, Const, Call, Unify, If, expr_from_dict, Ref
 from symir.ir.rule_schema import Expr, Cond, Rule, Query
 from symir.rules.validator import RuleValidator
@@ -35,10 +35,15 @@ class TestLLMRules(unittest.TestCase):
             signature=[ArgSpec(spec="X:string")],
         )
         body = Cond(literals=[Ref(schema=body_pred, terms=[Var("X")])], prob=0.5)
-        rule = Rule(predicate=head_pred, conditions=[body])
+        rule = Rule(
+            predicate=head_pred,
+            conditions=[body],
+            render_hints={"problog_var_mode": "sanitize"},
+        )
         loaded = Rule.from_dict(rule.to_dict())
         self.assertEqual(rule.predicate.schema_id, loaded.predicate.schema_id)
         self.assertEqual(len(loaded.conditions), 1)
+        self.assertEqual(loaded.render_hints, {"problog_var_mode": "sanitize"})
 
     def test_multiple_conditions_render(self) -> None:
         schema = self._schema()
@@ -141,6 +146,103 @@ class TestLLMRules(unittest.TestCase):
         query_fact = Query(predicate_id=person_id, terms=[Const("alice")])
         text2 = ProbLogRenderer().render_query(query_fact, RenderContext(schema=schema))
         self.assertEqual("query(Person(alice)).", text2)
+
+    def test_problog_var_default_sanitize(self) -> None:
+        person = PredicateSchema(
+            name="person",
+            arity=1,
+            signature=[ArgSpec(spec="x:string")],
+        )
+        schema = FactSchema([person])
+        head = PredicateSchema(
+            name="resident",
+            arity=1,
+            signature=[ArgSpec(spec="x:string")],
+        )
+        rule = Rule(
+            predicate=head,
+            conditions=[Cond(literals=[Ref(schema=person, terms=[Var("x")])], prob=0.5)],
+        )
+        text = ProbLogRenderer().render_rule(rule, RenderContext(schema=schema))
+        self.assertEqual("0.5::resident(X) :- person(X).", text)
+
+    def test_problog_var_mode_error(self) -> None:
+        person = PredicateSchema(
+            name="person",
+            arity=1,
+            signature=[ArgSpec(spec="x:string")],
+        )
+        schema = FactSchema([person])
+        head = PredicateSchema(
+            name="resident",
+            arity=1,
+            signature=[ArgSpec(spec="x:string")],
+        )
+        rule = Rule(
+            predicate=head,
+            conditions=[Cond(literals=[Ref(schema=person, terms=[Var("x")])], prob=0.5)],
+            render_hints={"problog_var_mode": "error"},
+        )
+        with self.assertRaises(RenderError):
+            ProbLogRenderer().render_rule(rule, RenderContext(schema=schema))
+
+    def test_problog_var_mode_prefix(self) -> None:
+        person = PredicateSchema(
+            name="person",
+            arity=1,
+            signature=[ArgSpec(spec="x:string")],
+        )
+        schema = FactSchema([person])
+        head = PredicateSchema(
+            name="resident",
+            arity=1,
+            signature=[ArgSpec(spec="x:string")],
+        )
+        rule = Rule(
+            predicate=head,
+            conditions=[Cond(literals=[Ref(schema=person, terms=[Var("x")])], prob=0.5)],
+            render_hints={"problog": {"var_mode": "prefix", "var_prefix": "VAR_"}},
+        )
+        text = ProbLogRenderer().render_rule(rule, RenderContext(schema=schema))
+        self.assertEqual("0.5::resident(VAR_x) :- person(VAR_x).", text)
+
+    def test_rel_head_uses_sub_obj_then_props(self) -> None:
+        person = PredicateSchema(
+            name="person",
+            arity=2,
+            signature=[ArgSpec(spec="Name:string"), ArgSpec(spec="Addr:string")],
+        )
+        company = PredicateSchema(
+            name="company",
+            arity=1,
+            signature=[ArgSpec(spec="Company:string")],
+        )
+        employment = Rel(
+            "employment",
+            sub=person,
+            obj=company,
+            props=[ArgSpec("Since:int"), ArgSpec("Title:string")],
+        )
+        schema = FactSchema([person, company, employment])
+        cond = Cond(
+            literals=[
+                Ref(schema=person, terms=[Var("Sub_Name"), Var("Sub_Addr")]),
+                Ref(schema=company, terms=[Var("Obj_Company")]),
+                Expr(expr=Unify(Var("Since"), Const(2020))),
+                Expr(expr=Unify(Var("Title"), Const("researcher"))),
+                Expr(expr=Unify(Var("Sub"), Call("person", [Var("Sub_Name"), Var("Sub_Addr")]))),
+                Expr(expr=Unify(Var("Obj"), Call("company", [Var("Obj_Company")]))),
+            ],
+            prob=0.7,
+        )
+        rule = Rule(predicate=employment, conditions=[cond])
+        text = ProbLogRenderer().render_rule(rule, RenderContext(schema=schema))
+        self.assertEqual(
+            "0.7::employment(Sub, Obj, Since, Title) :- "
+            "person(Sub_Name, Sub_Addr), company(Obj_Company), Since = 2020, "
+            "Title = researcher, Sub = person(Sub_Name, Sub_Addr), Obj = company(Obj_Company).",
+            text,
+        )
 
 
 if __name__ == "__main__":

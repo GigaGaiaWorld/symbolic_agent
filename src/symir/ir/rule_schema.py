@@ -53,17 +53,24 @@ class Cond:
 class Rule:
     predicate: PredicateSchema
     conditions: list[Cond] = field(default_factory=list)
+    render_hints: dict[str, Any] | None = None
 
     def to_dict(self) -> dict[str, Any]:
         data = self.predicate.to_dict()
         data["conditions"] = [cond.to_dict() for cond in self.conditions]
+        if self.render_hints is not None:
+            data["render_hints"] = self.render_hints
         return data
 
     @staticmethod
     def from_dict(data: dict[str, Any]) -> "Rule":
+        render_hints = data.get("render_hints")
+        if render_hints is not None and not isinstance(render_hints, dict):
+            raise SchemaError("Rule render_hints must be a dict if provided.")
         return Rule(
             predicate=PredicateSchema.from_dict(data),
             conditions=[Cond.from_dict(c) for c in data.get("conditions", [])],
+            render_hints=render_hints,
         )
 
 
