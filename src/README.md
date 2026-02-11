@@ -105,7 +105,7 @@ Probability is attached **per body/clause** (not on the rule itself). Missing va
 
 ### Literals
 - `RefLiteral`: references FactView predicates only; supports negation.
-- `ExprLiteral`: structured ExprIR only (no raw strings).
+- `Expr`: structured ExprIR only (no raw strings).
 
 ### Negation & restrictions
 - Allowed: negation (RefLiteral.negated, ExprIR.Not).
@@ -139,7 +139,7 @@ view = schema.view([person.schema_id])
 
 head_pred = PredicateSchema("Resident", 1, [ArgSpec("string")])
 head = HeadSchema(predicate=head_pred, terms=[Var("X")])
-body = Body(literals=[RefLiteral(predicate_id=person.schema_id, terms=[Var("X")])], prob=0.7)
+body = Body(literals=[Ref(schema_id=person.schema_id, terms=[Var("X")])], prob=0.7)
 rule = Rule(head=head, bodies=[body])
 
 text = ProbLogRenderer().render_rule(rule, RenderContext(schema=schema))
@@ -194,11 +194,12 @@ catalog = build_predicate_catalog(view, library=None)
 from symir.ir.fact_schema import ArgSpec, PredicateSchema, FactSchema, FactView
 from symir.ir.filters import FilterAST, PredMatch, And, Or, Not, filter_from_dict
 from symir.ir.expr_ir import Var, Const, Call, Unify, If, NotExpr, ExprIR
-from symir.ir.rule_schema import RefLiteral, ExprLiteral, HeadSchema, Body, Rule
+from symir.ir.rule_schema import RefLiteral, Expr, HeadSchema, Body, Rule
 from symir.rules.validator import RuleValidator
 from symir.rules.library import Library, LibrarySpec
 from symir.rules.library_runtime import LibraryRuntime
-from symir.fact_store.provider import DataProvider, CSVProvider, CSVSource, FactInstance
+from symir.fact_store.provider import DataProvider, CSVProvider, CSVSource
+from symir.ir.instance import Instance
 from symir.mappers.renderers import (
     Renderer,
     ProbLogRenderer,

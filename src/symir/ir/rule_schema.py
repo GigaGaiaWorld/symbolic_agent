@@ -1,4 +1,4 @@
-"""Rule schema definitions (head + bodies) and literals."""
+"""Rule schema definitions (predicate + conditions) and literals."""
 
 from __future__ import annotations
 
@@ -7,87 +7,34 @@ from typing import Any, Optional, Union
 
 from symir.errors import SchemaError
 from symir.ir.fact_schema import PredicateSchema
-from symir.ir.expr_ir import ExprIR, Var, Const, ExprTerm, expr_from_dict
+from symir.ir.expr_ir import ExprIR, Var, Const, ExprTerm, Ref, expr_from_dict
 
 
 @dataclass(frozen=True)
-class RefLiteral:
-    """Predicate reference literal."""
-
-    predicate_id: str
-    terms: list[ExprTerm]
-    negated: bool = False
-
-    def __post_init__(self) -> None:
-        for term in self.terms:
-            if not isinstance(term, (Var, Const)):
-                raise SchemaError("RefLiteral terms must be Var or Const.")
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "kind": "ref",
-            "predicate_id": self.predicate_id,
-            "terms": [t.to_dict() for t in self.terms],
-            "negated": self.negated,
-        }
-
-
-@dataclass(frozen=True)
-class ExprLiteral:
+class Expr:
     expr: ExprIR
 
     def to_dict(self) -> dict[str, Any]:
         return {"kind": "expr", "expr": self.expr.to_dict()}
 
-
-Literal = Union[RefLiteral, ExprLiteral]
+RefLiteral = Ref
+Literal = Union[Ref, Expr]
 
 
 def literal_from_dict(data: dict[str, Any]) -> Literal:
     kind = data.get("kind")
     if kind == "ref":
-        terms = [expr_from_dict(t) for t in data.get("terms", [])]
-        for term in terms:
-            if not isinstance(term, (Var, Const)):
-                raise SchemaError("RefLiteral terms must be Var or Const.")
-        return RefLiteral(
-            predicate_id=data["predicate_id"],
-            terms=terms,
-            negated=bool(data.get("negated", False)),
-        )
+        ref = expr_from_dict(data)
+        if not isinstance(ref, Ref):
+            raise SchemaError("Ref literal parsing failed.")
+        return ref
     if kind == "expr":
-        return ExprLiteral(expr=expr_from_dict(data["expr"]))
+        return Expr(expr=expr_from_dict(data["expr"]))
     raise SchemaError(f"Unknown Literal kind: {kind}")
 
 
 @dataclass(frozen=True)
-class HeadSchema:
-    predicate: PredicateSchema
-    terms: list[Var]
-
-    def __post_init__(self) -> None:
-        if len(self.terms) != self.predicate.arity:
-            raise SchemaError("HeadSchema terms length must match predicate arity.")
-        for term in self.terms:
-            if not isinstance(term, Var):
-                raise SchemaError("HeadSchema terms must be variables (var-only).")
-
-    def to_dict(self) -> dict[str, Any]:
-        return {
-            "predicate": self.predicate.to_dict(),
-            "terms": [t.to_dict() for t in self.terms],
-        }
-
-    @staticmethod
-    def from_dict(data: dict[str, Any]) -> "HeadSchema":
-        return HeadSchema(
-            predicate=PredicateSchema.from_dict(data["predicate"]),
-            terms=[expr_from_dict(t) for t in data.get("terms", [])],
-        )
-
-
-@dataclass(frozen=True)
-class Body:
+class Cond:
     literals: list[Literal] = field(default_factory=list)
     prob: Optional[float] = None
 
@@ -98,27 +45,26 @@ class Body:
         }
 
     @staticmethod
-    def from_dict(data: dict[str, Any]) -> "Body":
+    def from_dict(data: dict[str, Any]) -> "Cond":
         lits = [literal_from_dict(item) for item in data.get("literals", [])]
-        return Body(literals=lits, prob=data.get("prob"))
+        return Cond(literals=lits, prob=data.get("prob"))
 
 
 @dataclass(frozen=True)
 class Rule:
-    head: HeadSchema
-    bodies: list[Body]
+    predicate: PredicateSchema
+    conditions: list[Cond] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
-        return {
-            "head": self.head.to_dict(),
-            "bodies": [body.to_dict() for body in self.bodies],
-        }
+        data = self.predicate.to_dict()
+        data["conditions"] = [cond.to_dict() for cond in self.conditions]
+        return data
 
     @staticmethod
     def from_dict(data: dict[str, Any]) -> "Rule":
         return Rule(
-            head=HeadSchema.from_dict(data["head"]),
-            bodies=[Body.from_dict(b) for b in data.get("bodies", [])],
+            predicate=PredicateSchema.from_dict(data),
+            conditions=[Cond.from_dict(c) for c in data.get("conditions", [])],
         )
 
 
@@ -155,3 +101,7 @@ class Query:
             predicate=PredicateSchema.from_dict(predicate) if predicate else None,
             terms=[expr_from_dict(t) for t in data.get("terms", [])],
         )
+
+
+# Backwards-compatible alias
+Body = Cond

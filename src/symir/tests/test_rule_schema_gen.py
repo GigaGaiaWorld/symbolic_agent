@@ -14,19 +14,19 @@ class TestRuleSchemaGen(unittest.TestCase):
         parent = PredicateSchema(
             name="Parent",
             arity=2,
-            signature=[ArgSpec(datatype="string"), ArgSpec(datatype="string")],
+            signature=[ArgSpec(spec="string"), ArgSpec(spec="string")],
         )
         schema = FactSchema([parent])
         view = schema.view([parent.schema_id])
         model = build_pydantic_rule_model(view, mode="compact")
         instance = model.model_validate(
             {
-                "bodies": [
+                "conditions": [
                     {
                         "literals": [
                             {
                                 "kind": "ref",
-                                "predicate_id": parent.schema_id,
+                                "schema_id": parent.schema_id,
                                 "args": [
                                     {"name": "p", "value": {"kind": "var", "name": "X"}},
                                     {"name": "c", "value": {"kind": "var", "name": "Y"}},
@@ -38,7 +38,7 @@ class TestRuleSchemaGen(unittest.TestCase):
                 ],
             }
         )
-        self.assertEqual(len(instance.bodies), 1)
+        self.assertEqual(len(instance.conditions), 1)
 
         json_schema = build_responses_schema(view, mode="compact")
         json_blob = json.dumps(json_schema)

@@ -17,17 +17,23 @@ def build_pydantic_rule_model(
     *,
     mode: Literal["verbose", "compact"] = "verbose",
 ) -> type[BaseModel]:
-    """Build a Pydantic model that validates rule bodies only."""
+    """Build a Pydantic model that validates rule conditions only."""
 
     allowed_predicate_ids = {pred.schema_id: pred.arity for pred in view.predicates()}
     predicate_info: dict[
-        str, tuple[str, int, list[tuple[str | None, str | None, str | None]] | None, str | None]
+        str,
+        tuple[
+            str,
+            int,
+            list[tuple[str | None, str | None, str | None, str | None]] | None,
+            str | None,
+        ],
     ] = {}
     for pred in view.predicates():
         predicate_info[pred.schema_id] = (
             pred.name,
             pred.arity,
-            [(a.datatype, a.role, a.namespace) for a in pred.signature],
+            [(a.datatype, a.role, a.namespace, a.arg_name) for a in pred.signature],
             pred.description,
         )
     if library is not None:
@@ -35,7 +41,7 @@ def build_pydantic_rule_model(
             allowed_predicate_ids[pred_id] = spec.arity
             signature = None
             if spec.signature is not None:
-                signature = [(item, None, None) for item in spec.signature]
+                signature = [(item, None, None, None) for item in spec.signature]
             predicate_info[pred_id] = (spec.name, spec.arity, signature, spec.description)
     allowed_expr_ops = set(_builtin_ops())
     if library is not None:
@@ -49,7 +55,7 @@ def build_pydantic_rule_model(
     class ConstModel(BaseModel):
         kind: Literal["const"] = "const"
         value: str | int | float | bool
-        datatype: str
+        datatype: str | None = None
 
     ExprTermModel = Annotated[Union[VarModel, ConstModel], Field(discriminator="kind")]
 
@@ -83,20 +89,11 @@ def build_pydantic_rule_model(
         kind: Literal["not"] = "not"
         expr: "ExprModel"
 
-    ExprModel = Annotated[
-        Union[VarModel, ConstModel, CallModel, UnifyModel, IfModel, NotModel],
-        Field(discriminator="kind"),
-    ]
-
-    CallModel.model_rebuild()
-    UnifyModel.model_rebuild()
-    IfModel.model_rebuild()
-    NotModel.model_rebuild()
-
     class ArgSpecModel(BaseModel):
         datatype: str
         role: str | None = None
         namespace: str | None = None
+        arg_name: str | None = None
 
     class PredicateInfoModel(BaseModel):
         name: str
@@ -104,19 +101,57 @@ def build_pydantic_rule_model(
         signature: list[ArgSpecModel] | None = None
         description: str | None = None
 
-    class RefLiteralModel(BaseModel):
+    class RefExprModel(BaseModel):
         kind: Literal["ref"] = "ref"
-        predicate_id: str
-        predicate: PredicateInfoModel | None = None
+        schema_id: str
         terms: list[ExprTermModel] | None = None
         args: list[ArgValueModel] | None = None
         negated: bool = False
 
         @model_validator(mode="after")
         def _check_allowed(self):
-            if self.predicate_id not in allowed_predicate_ids:
-                raise ValueError(f"RefLiteral predicate not in FactView: {self.predicate_id}")
-            expected = allowed_predicate_ids[self.predicate_id]
+            if self.schema_id not in allowed_predicate_ids:
+                raise ValueError(f"Ref predicate not in FactView: {self.schema_id}")
+            expected = allowed_predicate_ids[self.schema_id]
+            if mode == "verbose":
+                if self.terms is None:
+                    raise ValueError("Ref terms required in verbose mode.")
+                if len(self.terms) != expected:
+                    raise ValueError(
+                        f"Ref arity mismatch: expected {expected}, got {len(self.terms)}"
+                    )
+            else:
+                if self.args is None:
+                    raise ValueError("Ref args required in compact mode.")
+                if len(self.args) != expected:
+                    raise ValueError(
+                        f"Ref arity mismatch: expected {expected}, got {len(self.args)}"
+                    )
+            return self
+
+    ExprModel = Annotated[
+        Union[VarModel, ConstModel, CallModel, UnifyModel, IfModel, NotModel, RefExprModel],
+        Field(discriminator="kind"),
+    ]
+
+    CallModel.model_rebuild()
+    UnifyModel.model_rebuild()
+    IfModel.model_rebuild()
+    NotModel.model_rebuild()
+    RefExprModel.model_rebuild()
+
+    class RefLiteralModel(BaseModel):
+        kind: Literal["ref"] = "ref"
+        schema_id: str
+        terms: list[ExprTermModel] | None = None
+        args: list[ArgValueModel] | None = None
+        negated: bool = False
+
+        @model_validator(mode="after")
+        def _check_allowed(self):
+            if self.schema_id not in allowed_predicate_ids:
+                raise ValueError(f"RefLiteral predicate not in FactView: {self.schema_id}")
+            expected = allowed_predicate_ids[self.schema_id]
             if mode == "verbose":
                 if self.terms is None:
                     raise ValueError("RefLiteral terms required in verbose mode.")
@@ -131,59 +166,51 @@ def build_pydantic_rule_model(
                     raise ValueError(
                         f"RefLiteral arity mismatch: expected {expected}, got {len(self.args)}"
                     )
-            info = predicate_info.get(self.predicate_id)
+            info = predicate_info.get(self.schema_id)
             if info is not None:
-                name, arity, signature, description = info
-                if self.predicate is not None:
-                    if self.predicate.name != name or self.predicate.arity != arity:
-                        raise ValueError("RefLiteral predicate info mismatch.")
-                    if signature is not None and self.predicate.signature is not None:
-                        sig_tuple = [(a.datatype, a.role, a.namespace) for a in self.predicate.signature]
-                        if sig_tuple != signature:
-                            raise ValueError("RefLiteral predicate signature mismatch.")
-                    if self.predicate.description is not None and description is not None:
-                        if self.predicate.description != description:
-                            raise ValueError("RefLiteral predicate description mismatch.")
+                _, _, signature, _ = info
                 if mode == "compact" and signature is not None and self.args is not None:
                     # enforce const datatype matches signature when provided
                     for arg_value, expected_sig in zip(self.args, signature):
                         expected_datatype = expected_sig[0]
                         if isinstance(arg_value.value, ConstModel):
-                            if arg_value.value.datatype != expected_datatype:
+                            if (
+                                arg_value.value.datatype is not None
+                                and arg_value.value.datatype != expected_datatype
+                            ):
                                 raise ValueError(
                                     f"Const datatype mismatch: expected {expected_datatype}, got {arg_value.value.datatype}"
                                 )
             return self
 
-    class ExprLiteralModel(BaseModel):
+    class ExprWrapperModel(BaseModel):
         kind: Literal["expr"] = "expr"
         expr: ExprModel
 
     LiteralModel = Annotated[
-        Union[RefLiteralModel, ExprLiteralModel],
+        Union[RefLiteralModel, ExprWrapperModel],
         Field(discriminator="kind"),
     ]
 
-    class BodyModel(BaseModel):
+    class CondModel(BaseModel):
         literals: list[LiteralModel]
         prob: float | None = Field(default=None, ge=0.0, le=1.0)
 
     class RuleInstanceModel(BaseModel):
-        bodies: list[BodyModel]
+        conditions: list[CondModel]
 
     return RuleInstanceModel
 
 
 def _ref_literal_schema(
-    predicate_id: str,
+    schema_id: str,
     name: str,
     arity: int,
     signature: list[ArgSpec] | None,
     description: str | None,
 ) -> dict[str, Any]:
     if signature is None:
-        signature = [ArgSpec(datatype="any") for _ in range(arity)]
-    description_value = description if description is not None else ""
+        signature = [ArgSpec(spec="any") for _ in range(arity)]
     term_schema = {
         "anyOf": [
             {
@@ -193,7 +220,7 @@ def _ref_literal_schema(
                     "name": {"type": "string"},
                     "datatype": {"type": "string"},
                 },
-                "required": ["kind", "name", "datatype"],
+                "required": ["kind", "name"],
                 "additionalProperties": False,
             },
             {
@@ -203,7 +230,7 @@ def _ref_literal_schema(
                     "value": {"type": ["string", "number", "boolean"]},
                     "datatype": {"type": "string"},
                 },
-                "required": ["kind", "value", "datatype"],
+                "required": ["kind", "value"],
                 "additionalProperties": False,
             },
         ]
@@ -212,27 +239,7 @@ def _ref_literal_schema(
         "type": "object",
         "properties": {
             "kind": {"type": "string", "const": "ref"},
-            "predicate_id": {"type": "string", "const": predicate_id},
-            "predicate": {
-                "type": "object",
-                "properties": {
-                    "name": {"type": "string", "const": name},
-                    "arity": {"type": "integer", "const": arity},
-                    "signature": {
-                        "type": "array",
-                        "const": [
-                            {"datatype": a.datatype, "role": a.role, "namespace": a.namespace}
-                            for a in signature
-                        ],
-                    },
-                    "description": {
-                        "type": "string",
-                        "const": description_value,
-                    },
-                },
-                "required": ["name", "arity", "signature", "description"],
-                "additionalProperties": False,
-            },
+            "schema_id": {"type": "string", "const": schema_id},
             "terms": {
                 "type": "array",
                 "items": term_schema,
@@ -241,7 +248,7 @@ def _ref_literal_schema(
             },
             "negated": {"type": "boolean"},
         },
-        "required": ["kind", "predicate_id", "predicate", "terms", "negated"],
+        "required": ["kind", "schema_id", "terms", "negated"],
         "additionalProperties": False,
     }
 
@@ -252,7 +259,7 @@ def build_responses_schema(
     *,
     mode: Literal["verbose", "compact"] = "verbose",
 ) -> dict[str, Any]:
-    """Build a JSON schema for OpenAI Responses API strict decoding (bodies only)."""
+    """Build a JSON schema for OpenAI Responses API strict decoding (conditions only)."""
     allowed_preds = view.predicates()
     if not allowed_preds and (library is None or not library.predicate_ids()):
         raise SchemaError("FactView has no predicates.")
@@ -267,7 +274,7 @@ def build_responses_schema(
                 "name": {"type": "string"},
                 "datatype": {"type": "string"},
             },
-            "required": ["kind", "name", "datatype"],
+            "required": ["kind", "name"],
             "additionalProperties": False,
         },
         "const": {
@@ -277,7 +284,7 @@ def build_responses_schema(
                 "value": {"type": ["string", "number", "boolean"]},
                 "datatype": {"type": "string"},
             },
-            "required": ["kind", "value", "datatype"],
+            "required": ["kind", "value"],
             "additionalProperties": False,
         },
         "call": {
@@ -320,49 +327,20 @@ def build_responses_schema(
             "required": ["kind", "expr"],
             "additionalProperties": False,
         },
-    }
-    defs["expr"] = {
-        "anyOf": [
-            {"$ref": "#/$defs/var"},
-            {"$ref": "#/$defs/const"},
-            {"$ref": "#/$defs/call"},
-            {"$ref": "#/$defs/unify"},
-            {"$ref": "#/$defs/if"},
-            {"$ref": "#/$defs/not"},
-        ]
-    }
-
-    if mode == "verbose":
-        ref_literal_items: list[dict[str, Any]] = []
-        for pred in allowed_preds:
-            ref_literal_items.append(
-                _ref_literal_schema(
-                    pred.schema_id,
-                    pred.name,
-                    pred.arity,
-                    pred.signature,
-                    pred.description,
-                )
-            )
-        if library is not None:
-            for pred_id, spec in library.predicate_ids().items():
-                signature = None
-                if spec.signature is not None:
-                    signature = [ArgSpec(datatype=item) for item in spec.signature]
-                ref_literal_items.append(
-                    _ref_literal_schema(pred_id, spec.name, spec.arity, signature, spec.description)
-                )
-        ref_literal_schema = {"anyOf": ref_literal_items}
-    else:
-        # compact: predicate_id enum + args array
-        allowed_ids = [p.schema_id for p in allowed_preds]
-        if library is not None:
-            allowed_ids.extend(list(library.predicate_ids().keys()))
-        ref_literal_schema = {
+        "ref": {
             "type": "object",
             "properties": {
                 "kind": {"type": "string", "const": "ref"},
-                "predicate_id": {"type": "string", "enum": allowed_ids},
+                "schema_id": {"type": "string"},
+                "terms": {
+                    "type": "array",
+                    "items": {
+                        "anyOf": [
+                            {"$ref": "#/$defs/var"},
+                            {"$ref": "#/$defs/const"},
+                        ]
+                    },
+                },
                 "args": {
                     "type": "array",
                     "items": {
@@ -382,7 +360,78 @@ def build_responses_schema(
                 },
                 "negated": {"type": "boolean"},
             },
-            "required": ["kind", "predicate_id", "args", "negated"],
+            "required": ["kind", "schema_id", "negated"],
+            "additionalProperties": False,
+        },
+    }
+    if mode == "verbose":
+        defs["ref"]["required"] = ["kind", "schema_id", "terms", "negated"]
+    else:
+        defs["ref"]["required"] = ["kind", "schema_id", "args", "negated"]
+
+    defs["expr"] = {
+        "anyOf": [
+            {"$ref": "#/$defs/var"},
+            {"$ref": "#/$defs/const"},
+            {"$ref": "#/$defs/call"},
+            {"$ref": "#/$defs/unify"},
+            {"$ref": "#/$defs/if"},
+            {"$ref": "#/$defs/not"},
+            {"$ref": "#/$defs/ref"},
+        ]
+    }
+
+    if mode == "verbose":
+        ref_literal_items: list[dict[str, Any]] = []
+        for pred in allowed_preds:
+            ref_literal_items.append(
+                _ref_literal_schema(
+                    pred.schema_id,
+                    pred.name,
+                    pred.arity,
+                    pred.signature,
+                    pred.description,
+                )
+            )
+        if library is not None:
+            for pred_id, spec in library.predicate_ids().items():
+                signature = None
+                if spec.signature is not None:
+                    signature = [ArgSpec(spec=item) for item in spec.signature]
+                ref_literal_items.append(
+                    _ref_literal_schema(pred_id, spec.name, spec.arity, signature, spec.description)
+                )
+        ref_literal_schema = {"anyOf": ref_literal_items}
+    else:
+        # compact: schema_id enum + args array
+        allowed_ids = [p.schema_id for p in allowed_preds]
+        if library is not None:
+            allowed_ids.extend(list(library.predicate_ids().keys()))
+        ref_literal_schema = {
+            "type": "object",
+            "properties": {
+                "kind": {"type": "string", "const": "ref"},
+                "schema_id": {"type": "string", "enum": allowed_ids},
+                "args": {
+                    "type": "array",
+                    "items": {
+                        "type": "object",
+                        "properties": {
+                            "name": {"type": "string"},
+                            "value": {
+                                "anyOf": [
+                                    {"$ref": "#/$defs/var"},
+                                    {"$ref": "#/$defs/const"},
+                                ]
+                            },
+                        },
+                        "required": ["name", "value"],
+                        "additionalProperties": False,
+                    },
+                },
+                "negated": {"type": "boolean"},
+            },
+            "required": ["kind", "schema_id", "args", "negated"],
             "additionalProperties": False,
         }
     expr_literal_schema = {
@@ -395,7 +444,7 @@ def build_responses_schema(
         "additionalProperties": False,
     }
     literal_schema = {"anyOf": [ref_literal_schema, expr_literal_schema]}
-    body_schema = {
+    cond_schema = {
         "type": "object",
         "properties": {
             "literals": {"type": "array", "items": literal_schema},
@@ -408,9 +457,9 @@ def build_responses_schema(
     result = {
         "type": "object",
         "properties": {
-            "bodies": {"type": "array", "items": body_schema},
+            "conditions": {"type": "array", "items": cond_schema},
         },
-        "required": ["bodies"],
+        "required": ["conditions"],
         "additionalProperties": False,
         "$defs": defs,
     }

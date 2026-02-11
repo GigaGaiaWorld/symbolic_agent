@@ -1,9 +1,9 @@
 import unittest
 
-from symir.errors import SchemaError, ValidationError
+from symir.errors import ValidationError
 from symir.ir.fact_schema import ArgSpec, PredicateSchema, FactSchema
-from symir.ir.expr_ir import Var, Const, Call, Unify, If, expr_from_dict
-from symir.ir.rule_schema import RefLiteral, ExprLiteral, HeadSchema, Body, Rule, Query
+from symir.ir.expr_ir import Var, Const, Call, Unify, If, expr_from_dict, Ref
+from symir.ir.rule_schema import Expr, Cond, Rule, Query
 from symir.rules.validator import RuleValidator
 from symir.mappers.renderers import ProbLogRenderer, RenderContext
 from symir.probability import ProbabilityConfig
@@ -14,37 +14,39 @@ class TestLLMRules(unittest.TestCase):
         person = PredicateSchema(
             name="Person",
             arity=1,
-            signature=[ArgSpec(datatype="string")],
+            signature=[ArgSpec(spec="string")],
         )
         lives = PredicateSchema(
             name="LivesIn",
             arity=2,
-            signature=[ArgSpec(datatype="string"), ArgSpec(datatype="string")],
+            signature=[ArgSpec(spec="string"), ArgSpec(spec="string")],
         )
         return FactSchema([person, lives])
 
-    def test_head_var_only(self) -> None:
+    def test_rule_roundtrip(self) -> None:
         head_pred = PredicateSchema(
             name="Resident",
             arity=1,
-            signature=[ArgSpec(datatype="string")],
+            signature=[ArgSpec(spec="X:string")],
         )
-        with self.assertRaises(SchemaError):
-            HeadSchema(predicate=head_pred, terms=[Const(value="alice", datatype="string")])
+        body = Cond(literals=[Ref(schema_id="pred", terms=[Var("X")])], prob=0.5)
+        rule = Rule(predicate=head_pred, conditions=[body])
+        loaded = Rule.from_dict(rule.to_dict())
+        self.assertEqual(rule.predicate.schema_id, loaded.predicate.schema_id)
+        self.assertEqual(len(loaded.conditions), 1)
 
-    def test_multiple_bodies_render(self) -> None:
+    def test_multiple_conditions_render(self) -> None:
         schema = self._schema()
         view = schema.view([p.schema_id for p in schema.predicates()])
+        person_id = schema.predicates()[0].schema_id
+        body1 = Cond(literals=[Ref(schema_id=person_id, terms=[Var("X")])], prob=0.5)
+        body2 = Cond(literals=[Ref(schema_id=person_id, terms=[Var("X")], negated=True)], prob=0.5)
         head_pred = PredicateSchema(
             name="Resident",
             arity=1,
-            signature=[ArgSpec(datatype="string")],
+            signature=[ArgSpec(spec="X:string")],
         )
-        head = HeadSchema(predicate=head_pred, terms=[Var("X")])
-        person_id = schema.predicates()[0].schema_id
-        body1 = Body(literals=[RefLiteral(predicate_id=person_id, terms=[Var("X")])], prob=0.5)
-        body2 = Body(literals=[RefLiteral(predicate_id=person_id, terms=[Var("X")], negated=True)], prob=0.5)
-        rule = Rule(head=head, bodies=[body1, body2])
+        rule = Rule(predicate=head_pred, conditions=[body1, body2])
 
         RuleValidator(view).validate(rule)
         renderer = ProbLogRenderer()
@@ -54,30 +56,28 @@ class TestLLMRules(unittest.TestCase):
     def test_ref_literal_not_in_view(self) -> None:
         schema = self._schema()
         view = schema.view([])
+        person_id = schema.predicates()[0].schema_id
+        body = Cond(literals=[Ref(schema_id=person_id, terms=[Var("X")])], prob=0.5)
         head_pred = PredicateSchema(
             name="Resident",
             arity=1,
-            signature=[ArgSpec(datatype="string")],
+            signature=[ArgSpec(spec="X:string")],
         )
-        head = HeadSchema(predicate=head_pred, terms=[Var("X")])
-        person_id = schema.predicates()[0].schema_id
-        body = Body(literals=[RefLiteral(predicate_id=person_id, terms=[Var("X")])], prob=0.5)
-        rule = Rule(head=head, bodies=[body])
+        rule = Rule(predicate=head_pred, conditions=[body])
         with self.assertRaises(ValidationError):
             RuleValidator(view).validate(rule)
 
     def test_negated_ref_literal_render(self) -> None:
         schema = self._schema()
         view = schema.view([p.schema_id for p in schema.predicates()])
+        person_id = schema.predicates()[0].schema_id
+        body = Cond(literals=[Ref(schema_id=person_id, terms=[Var("X")], negated=True)], prob=0.5)
         head_pred = PredicateSchema(
             name="Resident",
             arity=1,
-            signature=[ArgSpec(datatype="string")],
+            signature=[ArgSpec(spec="string")],
         )
-        head = HeadSchema(predicate=head_pred, terms=[Var("X")])
-        person_id = schema.predicates()[0].schema_id
-        body = Body(literals=[RefLiteral(predicate_id=person_id, terms=[Var("X")], negated=True)], prob=0.5)
-        rule = Rule(head=head, bodies=[body])
+        rule = Rule(predicate=head_pred, conditions=[body])
         RuleValidator(view).validate(rule)
         text = ProbLogRenderer().render_rule(rule, RenderContext(schema=schema))
         self.assertIn("\\+ Person(X)", text)
@@ -97,11 +97,10 @@ class TestLLMRules(unittest.TestCase):
         head_pred = PredicateSchema(
             name="Calc",
             arity=2,
-            signature=[ArgSpec(datatype="int"), ArgSpec(datatype="int")],
+            signature=[ArgSpec(spec="X:int"), ArgSpec(spec="Y:int")],
         )
-        head = HeadSchema(predicate=head_pred, terms=[Var("X"), Var("Y")])
-        body = Body(literals=[ExprLiteral(expr=expr2)], prob=0.8)
-        rule = Rule(head=head, bodies=[body])
+        body = Cond(literals=[Expr(expr=expr2)], prob=0.8)
+        rule = Rule(predicate=head_pred, conditions=[body])
         RuleValidator(view).validate(rule)
         text = ProbLogRenderer().render_rule(rule, RenderContext(schema=schema))
         self.assertIn("((X > 0, Y = X + 1) ; (\\+ (X > 0), Y = 0))", text)
@@ -109,15 +108,14 @@ class TestLLMRules(unittest.TestCase):
     def test_missing_probability_default(self) -> None:
         schema = self._schema()
         view = schema.view([p.schema_id for p in schema.predicates()])
+        person_id = schema.predicates()[0].schema_id
+        body = Cond(literals=[Ref(schema_id=person_id, terms=[Var("X")])], prob=None)
         head_pred = PredicateSchema(
             name="Resident",
             arity=1,
-            signature=[ArgSpec(datatype="string")],
+            signature=[ArgSpec(spec="X:string")],
         )
-        head = HeadSchema(predicate=head_pred, terms=[Var("X")])
-        person_id = schema.predicates()[0].schema_id
-        body = Body(literals=[RefLiteral(predicate_id=person_id, terms=[Var("X")])], prob=None)
-        rule = Rule(head=head, bodies=[body])
+        rule = Rule(predicate=head_pred, conditions=[body])
         RuleValidator(view).validate(rule)
         config = ProbabilityConfig(default_rule_prob=0.7, missing_prob_policy="inject_default")
         text = ProbLogRenderer().render_rule(rule, RenderContext(schema=schema, prob_config=config))
@@ -128,7 +126,7 @@ class TestLLMRules(unittest.TestCase):
         head_pred = PredicateSchema(
             name="Resident",
             arity=1,
-            signature=[ArgSpec(datatype="string")],
+            signature=[ArgSpec(spec="string")],
         )
         query = Query(predicate=head_pred, terms=[Var("X")])
         text = ProbLogRenderer().render_query(query, RenderContext(schema=schema))

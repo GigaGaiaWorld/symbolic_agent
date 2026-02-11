@@ -6,7 +6,7 @@ import json
 from typing import Any
 
 from symir.rules.constraint_schemas import build_pydantic_rule_model
-from symir.ir.rule_schema import Rule, Body, RefLiteral, ExprLiteral
+from symir.ir.rule_schema import Rule, Cond, RefLiteral, Expr
 from symir.ir.expr_ir import Var, Const, expr_from_dict
 from symir.rules.validator import RuleValidator
 
@@ -27,7 +27,7 @@ def _term_from_value(value: dict[str, Any]):
     if value["kind"] == "var":
         return Var(name=value["name"], datatype=value.get("datatype"))
     if value["kind"] == "const":
-        return Const(value=value["value"], datatype=value["datatype"])
+        return Const(value=value["value"], datatype=value.get("datatype"))
     raise ValueError(f"Unknown term kind: {value.get('kind')}")
 
 
@@ -43,7 +43,7 @@ def resp_to_rule(
 
     Args:
         resp: Responses API output object.
-        head: HeadSchema (fixed externally).
+        head: Predicate schema (Fact/Rel) used as rule head.
         view: FactView for validation.
         library: Optional Library (for predicate/expr ops).
         mode: "compact" or "verbose" decoding.
@@ -53,8 +53,8 @@ def resp_to_rule(
     model = build_pydantic_rule_model(view, library=library, mode=mode)
     validated = model.model_validate(payload)
 
-    bodies: list[Body] = []
-    for body in validated.bodies:
+    conditions: list[Cond] = []
+    for body in validated.conditions:
         literals = []
         for lit in body.literals:
             if lit.kind == "ref":
@@ -63,14 +63,14 @@ def resp_to_rule(
                 else:
                     terms = [_term_from_value(term.model_dump()) for term in lit.terms]
                 literals.append(
-                    RefLiteral(predicate_id=lit.predicate_id, terms=terms, negated=lit.negated)
+                    RefLiteral(schema_id=lit.schema_id, terms=terms, negated=lit.negated)
                 )
             elif lit.kind == "expr":
-                literals.append(ExprLiteral(expr=expr_from_dict(lit.expr.model_dump())))
+                literals.append(Expr(expr=expr_from_dict(lit.expr.model_dump())))
             else:
                 raise ValueError(f"Unknown literal kind: {lit.kind}")
-        bodies.append(Body(literals=literals, prob=body.prob))
+        conditions.append(Cond(literals=literals, prob=body.prob))
 
-    rule = Rule(head=head, bodies=bodies)
+    rule = Rule(predicate=head, conditions=conditions)
     RuleValidator(view, library=library).validate(rule)
     return rule

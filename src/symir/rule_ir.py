@@ -2,10 +2,20 @@
 
 from __future__ import annotations
 
-from symir.ir.fact_schema import ArgSpec, PredicateSchema, FactSchema, FactView
+from symir.ir.fact_schema import (
+    ArgSpec,
+    PredicateSchema,
+    FactSchema,
+    FactView,
+    Fact,
+    Rel,
+    InstanceRef,
+    FactLayer,
+)
+from symir.ir.instance import Instance
 from symir.ir.filters import FilterAST, PredMatch, And, Or, Not, filter_from_dict
-from symir.ir.expr_ir import Var, Const, Call, Unify, If, NotExpr, ExprIR
-from symir.ir.rule_schema import RefLiteral, ExprLiteral, HeadSchema, Body, Rule, Query
+from symir.ir.expr_ir import Var, Const, Call, Unify, If, NotExpr, ExprIR, Ref
+from symir.ir.rule_schema import RefLiteral, Expr, Cond, Rule, Query
 from symir.rules.validator import RuleValidator
 from symir.rules.library import Library, LibrarySpec
 from symir.rules.library_runtime import LibraryRuntime
@@ -14,7 +24,8 @@ from symir.rules.constraint_schemas import (
     build_responses_schema,
     build_predicate_catalog,
 )
-from symir.fact_store.provider import DataProvider, CSVProvider, CSVSource, FactInstance
+from symir.fact_store.provider import DataProvider, CSVProvider, CSVSource
+from symir.fact_store.rel_builder import RelBuilder
 from symir.mappers.renderers import (
     Renderer,
     ProbLogRenderer,
@@ -30,6 +41,11 @@ __all__ = [
     "PredicateSchema",
     "FactSchema",
     "FactView",
+    "Fact",
+    "Rel",
+    "InstanceRef",
+    "FactLayer",
+    "Instance",
     "FilterAST",
     "PredMatch",
     "And",
@@ -38,15 +54,15 @@ __all__ = [
     "filter_from_dict",
     "Var",
     "Const",
+    "Ref",
     "Call",
     "Unify",
     "If",
     "NotExpr",
     "ExprIR",
     "RefLiteral",
-    "ExprLiteral",
-    "HeadSchema",
-    "Body",
+    "Expr",
+    "Cond",
     "Rule",
     "Query",
     "RuleValidator",
@@ -59,7 +75,7 @@ __all__ = [
     "DataProvider",
     "CSVProvider",
     "CSVSource",
-    "FactInstance",
+    "RelBuilder",
     "Renderer",
     "ProbLogRenderer",
     "PrologRenderer",

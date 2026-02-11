@@ -6,10 +6,10 @@ from dataclasses import dataclass
 from typing import Optional, Callable
 
 from symir.errors import RenderError
-from symir.ir.rule_schema import Rule, Body, RefLiteral, ExprLiteral, Query
-from symir.ir.expr_ir import Var, Const, Call, Unify, If, NotExpr, ExprIR
+from symir.ir.rule_schema import Rule, Cond, Expr, Query
+from symir.ir.expr_ir import Var, Const, Call, Unify, If, NotExpr, ExprIR, Ref
 from symir.ir.fact_schema import FactSchema
-from symir.fact_store.provider import FactInstance
+from symir.ir.instance import Instance
 from symir.rules.library import Library
 from symir.rules.library_runtime import LibraryRuntime
 from symir.probability import ProbabilityConfig, resolve_probability
@@ -32,7 +32,7 @@ class Renderer:
         raise NotImplementedError
 
     def render_facts(  # pragma: no cover - interface
-        self, facts: list[FactInstance], context: RenderContext
+        self, facts: list[Instance], context: RenderContext
     ) -> str:
         raise NotImplementedError
 
@@ -48,7 +48,7 @@ class Renderer:
 
     def render_program(  # pragma: no cover - interface
         self,
-        facts: list[FactInstance],
+        facts: list[Instance],
         rules: list[Rule],
         context: RenderContext,
         queries: list[Query] | None = None,
@@ -61,19 +61,19 @@ class ProbLogRenderer(Renderer):
 
     def render_rule(self, rule: Rule, context: RenderContext) -> str:
         clauses: list[str] = []
-        for idx, body in enumerate(rule.bodies):
+        for idx, cond in enumerate(rule.conditions):
             prob = resolve_probability(
-                body.prob,
+                cond.prob,
                 default_value=context.prob_config.default_rule_prob,
                 policy=context.prob_config.missing_prob_policy,
-                context=f"rule {rule.head.predicate.name} body {idx}",
+                context=f"rule {rule.predicate.name} condition {idx}",
             )
-            head_text = self._render_head(rule, prob)
-            body_text = self._render_body(body, context)
+            head_text = self._render_head(rule.predicate, prob)
+            body_text = self._render_body(cond, context)
             clauses.append(f"{head_text} :- {body_text}.")
         return "\n".join(clauses)
 
-    def render_facts(self, facts: list[FactInstance], context: RenderContext) -> str:
+    def render_facts(self, facts: list[Instance], context: RenderContext) -> str:
         lines: list[str] = []
         for idx, fact in enumerate(facts):
             prob = resolve_probability(
@@ -82,8 +82,9 @@ class ProbLogRenderer(Renderer):
                 policy=context.prob_config.missing_prob_policy,
                 context=f"fact {idx}",
             )
-            pred_name, arity, runtime_handler = self._resolve_predicate(fact.predicate_id, context)
-            terms = [self._render_term(t) for t in fact.terms]
+            pred_name, arity, runtime_handler = self._resolve_predicate(fact.schema_id, context)
+            schema = context.schema.get(fact.schema_id)
+            terms = [self._render_term(t) for t in fact.to_terms(schema)]
             if runtime_handler is not None:
                 atom = runtime_handler(terms)
             else:
@@ -111,7 +112,7 @@ class ProbLogRenderer(Renderer):
 
     def render_program(
         self,
-        facts: list[FactInstance],
+        facts: list[Instance],
         rules: list[Rule],
         context: RenderContext,
         queries: list[Query] | None = None,
@@ -125,28 +126,22 @@ class ProbLogRenderer(Renderer):
             parts.append(self.render_queries(queries, context))
         return "\n\n".join(part for part in parts if part)
 
-    def _render_head(self, rule: Rule, prob: float) -> str:
-        terms = ", ".join(self._render_term(t) for t in rule.head.terms)
+    def _render_head(self, predicate, prob: float) -> str:
+        terms = ", ".join(self._render_term(t) for t in self._head_terms(predicate))
         prefix = f"{prob}::" if prob is not None else ""
-        if rule.head.predicate.arity == 0:
-            return f"{prefix}{rule.head.predicate.name}"
-        return f"{prefix}{rule.head.predicate.name}({terms})"
+        if predicate.arity == 0:
+            return f"{prefix}{predicate.name}"
+        return f"{prefix}{predicate.name}({terms})"
 
-    def _render_body(self, body: Body, context: RenderContext) -> str:
+    def _render_body(self, body: Cond, context: RenderContext) -> str:
         if not body.literals:
             return "true"
         return ", ".join(self._render_literal(lit, context) for lit in body.literals)
 
     def _render_literal(self, literal, context: RenderContext) -> str:
-        if isinstance(literal, RefLiteral):
-            pred_name, arity, runtime_handler = self._resolve_predicate(literal.predicate_id, context)
-            terms = [self._render_term(t) for t in literal.terms]
-            if runtime_handler is not None:
-                atom = runtime_handler(terms)
-            else:
-                atom = f"{pred_name}({', '.join(terms)})" if arity > 0 else pred_name
-            return f"\\+ {atom}" if literal.negated else atom
-        if isinstance(literal, ExprLiteral):
+        if isinstance(literal, Ref):
+            return self._render_ref(literal, context, negate=literal.negated)
+        if isinstance(literal, Expr):
             return self._render_expr(literal.expr, context)
         raise RenderError("Unknown literal type.")
 
@@ -155,6 +150,10 @@ class ProbLogRenderer(Renderer):
             return expr.name
         if isinstance(expr, Const):
             return self._render_const(expr)
+        if isinstance(expr, Ref):
+            if expr.negated:
+                raise RenderError("Negated ref not allowed in expression context.")
+            return self._render_ref(expr, context, negate=False)
         if isinstance(expr, Unify):
             return f"{self._render_expr(expr.lhs, context)} = {self._render_expr(expr.rhs, context)}"
         if isinstance(expr, Call):
@@ -210,7 +209,21 @@ class ProbLogRenderer(Renderer):
             return term.name
         if isinstance(term, Const):
             return self._render_const(term)
-        raise RenderError("RefLiteral term must be Var/Const.")
+        if isinstance(term, (str, int, float, bool)):
+            return self._render_const(Const(value=term))
+        raise RenderError("Ref term must be Var/Const.")
+
+    def _head_terms(self, predicate) -> list[ExprIR]:
+        return [Var(arg.name) for arg in predicate.signature]
+
+    def _render_ref(self, ref: Ref, context: RenderContext, *, negate: bool) -> str:
+        pred_name, arity, runtime_handler = self._resolve_predicate(ref.schema_id, context)
+        terms = [self._render_term(t) for t in ref.terms]
+        if runtime_handler is not None:
+            atom = runtime_handler(terms)
+        else:
+            atom = f"{pred_name}({', '.join(terms)})" if arity > 0 else pred_name
+        return f"\\+ {atom}" if negate else atom
 
     def _render_const(self, const: Const) -> str:
         value = const.value

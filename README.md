@@ -16,16 +16,151 @@ pip install -e .
 
 ## Components
 
-- `ir/`: Neutral, serializable IR types and fact schema.
-- `fact_store/`: CSV-backed fact loading.
+- `ir/`: Core IR types and predicate schemas (`Fact`/`Rel`/`FactLayer`), plus `Instance`.
+- `fact_store/`: CSV-backed fact loading (preferred: `CSVProvider`).
 - `rules/`: Rule concepts, registry persistence, and constraint schemas (Pydantic + JSON schema).
 - `mappers/`: Target language mapping (ProbLog implemented).
 - `rule_ir.py`: Unified entrypoint for rule schema/IR (rules, filters, providers, renderers).
 - `tests/`: Minimal tests for CSV loading, schema generation, and mapping.
 
-## Fact Schema (JSON/dict)
+## Fact/Rel Schema (preferred)
 
 ```python
+from symir.ir.fact_schema import ArgSpec, Fact, Rel, FactLayer
+
+person = Fact(
+    "person",
+    [ArgSpec("Name:string", role="key"), ArgSpec("address:string")],
+)
+city = Fact(
+    "city",
+    [ArgSpec("Name:string", role="key"), ArgSpec("Country:string")],
+)
+lives_in = Rel(
+    "lives_in",
+    sub=person,
+    obj=city,
+    props=[ArgSpec("since:int")],
+)
+
+schema = FactLayer([person, city, lives_in])
+```
+
+Notes:
+
+- `merge_policy` is set on `Fact`/`Rel` (schema-level), not on instances.
+- `schema_id` is derived from stable schema fields and is used for identity.
+- Allowed `merge_policy` values: `max | latest | noisy_or | overwrite | keep_all`.
+
+## Instances
+
+```python
+from symir.ir.instance import Instance
+
+alice = Instance(schema=person, terms=["alice", "darmstadt"], prob=0.9)
+
+rel = Instance(
+    schema=lives_in,
+    terms={
+        "sub_ref": alice,
+        "obj_key": {"Name": "darmstadt"},
+        "props": {"since": 2020},
+    },
+    meta={
+        "source": "csv",
+        "observed_at": "2026-02-10T12:00:00Z",
+        "status": "asserted",
+    },
+)
+
+readable = rel.to_dict(include_keys=True)
+```
+
+Meta (strict) allowed keys:
+
+- `source`, `observed_at`, `ingested_at`, `evidence_id`, `trace_id`
+- `confidence` (0.0–1.0), `status` (`asserted|inferred|retracted`)
+- `provenance` (dict), `tags` (list[str])
+
+Unknown meta keys raise `SchemaError`.
+
+## Load CSV Facts (FactLayer)
+
+```python
+from pathlib import Path
+from symir.fact_store.provider import CSVProvider, CSVSource
+
+sources = [
+    CSVSource(predicate_id=person.schema_id, file="people.csv", columns=["Name", "address"]),
+    CSVSource(predicate_id=city.schema_id, file="cities.csv", columns=["Name", "Country"]),
+    CSVSource(predicate_id=lives_in.schema_id, file="lives_in.csv", columns=["sub_Name", "obj_Name", "since"]),
+]
+
+provider = CSVProvider(
+    schema=schema,
+    base_path=Path("data"),
+    sources=sources,
+    datatype_cast="coerce",  # none | coerce | strict
+)
+
+view = schema.view([p.schema_id for p in schema.predicates()])
+instances = provider.query(view)
+```
+
+Notes:
+
+- `columns` are mapped **by signature order**, not by arg name.
+- For relations, the signature is derived as `sub_*` keys + `obj_*` keys + props.
+
+## Build Relations From Facts (RelBuilder)
+
+Use `RelBuilder` when your relation CSV does not already contain `sub_*` / `obj_*` columns
+and you need to match existing fact instances.
+
+```python
+from symir.fact_store.rel_builder import RelBuilder
+from symir.fact_store.provider import CSVProvider, CSVSource
+
+facts = provider.query(schema.view([person.schema_id, city.schema_id]))
+
+builder = RelBuilder(
+    rel=lives_in,
+    match_keys=["person", "city"],
+    match_props=["since"],
+    key_mode="partial",
+    multi="cartesian",
+)
+
+rel_source = CSVSource(
+    predicate_id=lives_in.schema_id,
+    file="lives_in.csv",
+    columns=["person", "city", "since"],
+    prob_column="prob",
+)
+
+rels = provider.build_relations(
+    builder=builder,
+    facts=facts,
+    source=rel_source,
+    maps={"person": "person_name", "city": "city_name"},
+)
+```
+
+Notes:
+
+- `columns` are logical row keys consumed by `RelBuilder`.
+- `maps` maps logical keys to actual CSV column names.
+- If `match_keys` is omitted, `RelBuilder` expects `sub_<Key>` / `obj_<Key>` columns by default.
+
+## Legacy CSV Mapping (ir.schema)
+
+If you are using the older mapping schema (separate from `Fact/Rel`), use `CsvFactStore`:
+
+```python
+from pathlib import Path
+from symir.ir.schema import FactSchema
+from symir.fact_store.csv_store import CsvFactStore
+
 schema = {
     "nodes": {
         "Person": {"file": "people.csv", "column": "name"},
@@ -35,189 +170,52 @@ schema = {
         "LivesIn": {"file": "lives_in.csv", "columns": ["person", "city"]}
     },
 }
-```
 
-## Load CSV Facts
-
-```python
-from pathlib import Path
-from symir.ir.schema import FactSchema
-from symir.fact_store.csv_store import CsvFactStore
-
-schema = FactSchema.from_dict(schema)
-store = CsvFactStore(schema=schema, base_path=Path("/data"))
+store = CsvFactStore(schema=FactSchema.from_dict(schema), base_path=Path("/data"))
 facts = store.load_facts()
 ```
 
-## Rule Registry and Constraint Schemas
-
-```python
-from symir.ir.types import IRPredicateRef
-from symir.rules.concepts import RuleConcept
-from symir.rules.registry import RuleRegistry
-from symir.rules.constraint_schemas import (
-    build_pydantic_rule_model,
-    build_responses_schema,
-    build_predicate_catalog,
-)
-
-registry = RuleRegistry()
-registry.add(
-    RuleConcept(
-        name="Ancestor",
-        arity=2,
-        description="Ancestor relation",
-        head=IRPredicateRef(name="Ancestor", arity=2, layer="rule"),
-        allowed_body_predicates=[
-            IRPredicateRef(name="Parent", arity=2, layer="fact"),
-            IRPredicateRef(name="Ancestor", arity=2, layer="rule"),
-        ],
-    )
-)
-
-pydantic_model = build_pydantic_rule_model(schema, registry)
-json_schema = build_responses_schema(schema, registry)
-```
-
-## ProbLog Mapping
-
-```python
-from symir.ir.types import IRProgram
-from symir.mappers.problog import to_problog
-
-program = IRProgram(facts=facts, rules=[])
-problog_text = to_problog(program)
-```
-
-## Notes
-
-- Python 3.10+.
-- Only standard library + `pydantic`.
-- Probabilistic rules are rendered as head annotations with a comment note.
-- CSV `prob_column` values may be empty; missing values default to `DEFAULT_PROB_VALUE = 1.0`.
-
 ## Rule Schema/IR (new)
 
-This package also provides a **neutral, serializable rule IR** designed for rule generation (LLM or non-LLM).
-It is modular and ready for multi-backend rendering (ProbLog implemented, others stubbed).
+This package provides a neutral, serializable rule IR for generation and rendering.
 
-### Head var-only
-`HeadSchema` allows only variables. Any constants must be expressed in the body via `Unify` or comparison calls.
+Notes:
 
-### Bodies = rule branches (clause-level probability)
-One head + multiple bodies = multiple clauses:
+- Rule heads are inferred from the predicate signature; conditions carry the explicit logic.
+- Probabilities are attached per condition (clause-level).
+- `RefLiteral` references predicates by `schema_id`.
 
-```
-Head :- Body1.
-Head :- Body2.
-```
-
-Probability is attached **per body/clause** (not on the rule itself). Missing values are resolved by
-`ProbabilityConfig` defaults.
-
-### Literals
-- `RefLiteral`: references FactView predicates only; supports negation.
-- `ExprLiteral`: structured ExprIR only (no raw strings).
-
-### Negation & restrictions
-- Allowed: negation (RefLiteral.negated, ExprIR.Not).
-- Forbidden: recursion (direct recursion is blocked), aggregates, cut.
-
-### FactSchema / FactView / Filter AST
-
-`FactSchema` defines canonical predicate schemas with stable `schema_id` (hash). `FactView` is a filtered subset and
-is the only set of predicates LLM may reference. Use Filter AST (`And`/`Or`/`Not`/`PredMatch`) or dict sugar.
-
-### DataProvider abstraction
-`DataProvider.query(view, filter)` is the extension point. `CSVProvider` implements CSV-backed facts.
-
-### Probability default strategy
-Configurable defaults with `ProbabilityConfig`:
-- `default_fact_prob`
-- `default_rule_prob`
-- `missing_prob_policy` (`inject_default` / `warn_and_default` / `error`)
-
-### Example
+Example:
 
 ```python
 from symir.rule_ir import (
-    ArgSpec, PredicateSchema, FactSchema, Var, HeadSchema,
-    RefLiteral, Body, Rule, ProbLogRenderer, RenderContext
+    ArgSpec, Fact, FactLayer, Var, Ref, Cond, Rule,
+    ProbLogRenderer, RenderContext
 )
+from symir.ir.fact_schema import PredicateSchema
 
-person = PredicateSchema("Person", 1, [ArgSpec("string")])
-schema = FactSchema([person])
+person = Fact("person", [ArgSpec("Name:string")])
+schema = FactLayer([person])
 view = schema.view([person.schema_id])
 
-head_pred = PredicateSchema("Resident", 1, [ArgSpec("string")])
-head = HeadSchema(predicate=head_pred, terms=[Var("X")])
-body = Body(literals=[RefLiteral(predicate_id=person.schema_id, terms=[Var("X")])], prob=0.7)
-rule = Rule(head=head, bodies=[body])
+head_pred = PredicateSchema("resident", 1, [ArgSpec("X:string")])
+cond = Cond(literals=[Ref(schema_id=person.schema_id, terms=[Var("X")])], prob=0.7)
+rule = Rule(predicate=head_pred, conditions=[cond])
 
 text = ProbLogRenderer().render_rule(rule, RenderContext(schema=schema))
 ```
 
-### LibraryRuntime（可执行渲染）
-
-`LibrarySpec` 仅保存可序列化元数据。若需要直接可执行的后端渲染逻辑，可用 `LibraryRuntime`：
+## APIs
 
 ```python
-from symir.rule_ir import Library, LibrarySpec, LibraryRuntime
-
-lib = Library()
-lib.register(LibrarySpec(
-    name="member",
-    arity=2,
-    kind="predicate",
-    description="Membership in list",
-    signature=["term", "list"],
-))
-
-runtime = LibraryRuntime(lib)
-runtime.register(
-    name="member",
-    arity=2,
-    kind="predicate",
-    backend="problog",
-    handler=lambda args: f"member({args[0]}, {args[1]})",
+from symir.rule_ir import (
+    ArgSpec, Fact, Rel, FactLayer, FactView,
+    Var, Const, Call, Unify, If, NotExpr, ExprIR,
+    RefLiteral, Expr, Cond, Rule, Query,
+    FilterAST, PredMatch, And, Or, Not, filter_from_dict,
+    RuleValidator, ProbabilityConfig,
+    DataProvider, CSVProvider, CSVSource,
+    Renderer, ProbLogRenderer, PrologRenderer, DatalogRenderer, CypherRenderer, RenderContext,
 )
-```
-
-### LLM 约束解码 Schema
-
-如果你需要给 LLM 做结构化约束解码，使用：
-
-```python
-from symir.rules.constraint_schemas import (
-    build_pydantic_rule_model,
-    build_responses_schema,
-)
-
-# 约束解码仅生成 bodies（head 已由系统提供）
-# 可选传入 library 以允许库谓词/表达式
-model = build_pydantic_rule_model(view, library=None, mode="compact")
-responses_schema = build_responses_schema(view, library=None, mode="compact")
-catalog = build_predicate_catalog(view, library=None)
-```
-
-
-### APIs:
-```python
-from symir.ir.fact_schema import ArgSpec, PredicateSchema, FactSchema, FactView
-from symir.ir.filters import FilterAST, PredMatch, And, Or, Not, filter_from_dict
-from symir.ir.expr_ir import Var, Const, Call, Unify, If, NotExpr, ExprIR
-from symir.ir.rule_schema import RefLiteral, ExprLiteral, HeadSchema, Body, Rule
-from symir.rules.validator import RuleValidator
-from symir.rules.library import Library, LibrarySpec
-from symir.rules.library_runtime import LibraryRuntime
-from symir.fact_store.provider import DataProvider, CSVProvider, CSVSource, FactInstance
-from symir.mappers.renderers import (
-    Renderer,
-    ProbLogRenderer,
-    PrologRenderer,
-    DatalogRenderer,
-    CypherRenderer,
-    RenderContext,
-)
-from symir.probability import ProbabilityConfig
+from symir.ir.instance import Instance
 ```

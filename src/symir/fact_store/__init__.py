@@ -5,13 +5,15 @@ from symir.fact_store.provider import (
     DataProvider,
     CSVProvider,
     CSVSource,
-    FactInstance,
 )
+from symir.fact_store.rel_builder import RelBuilder
+from symir.ir.instance import Instance
 
 __all__ = [
     "CsvFactStore",
     "DataProvider",
     "CSVProvider",
     "CSVSource",
-    "FactInstance",
+    "RelBuilder",
+    "Instance",
 ]
