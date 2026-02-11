@@ -21,9 +21,6 @@ class RenderContext:
     schema: FactSchema
     library: Optional[Library] = None
     library_runtime: Optional[LibraryRuntime] = None
-    prob_config: ProbabilityConfig = ProbabilityConfig()
-    problog_var_mode: Literal["error", "sanitize", "prefix", "capitalize"] = "sanitize"
-    problog_var_prefix: str = "VAR_"
 
 
 @dataclass
@@ -135,33 +132,54 @@ class Renderer:
 class ProbLogRenderer(Renderer):
     backend = "problog"
 
+    def __init__(
+        self,
+        *,
+        prob_config: ProbabilityConfig | None = None,
+        var_mode: Literal["error", "sanitize", "prefix", "capitalize"] = "sanitize",
+        var_prefix: str = "VAR_",
+        rel_mode: Literal["none", "flattened", "composed"] = "none",
+    ) -> None:
+        self.prob_config = prob_config or ProbabilityConfig()
+        self.var_mode = var_mode
+        self.var_prefix = var_prefix
+        self.rel_mode = rel_mode
+
     def render_rule(self, rule: Rule, context: RenderContext) -> str:
-        mode, prefix = self._resolve_var_rendering(rule, context)
+        configs = self._validated_render_configs(rule)
+        mode, prefix = self._resolve_var_rendering(configs)
+        rel_mode = self._resolve_rel_mode(configs)
         clauses: list[str] = []
         for idx, cond in enumerate(rule.conditions):
             var_policy = _VarNamePolicy(mode=mode, prefix=prefix)
             prob = resolve_probability(
                 cond.prob,
-                default_value=context.prob_config.default_rule_prob,
-                policy=context.prob_config.missing_prob_policy,
+                default_value=self.prob_config.default_rule_prob,
+                policy=self.prob_config.missing_prob_policy,
                 context=f"rule {rule.predicate.name} condition {idx}",
             )
-            head_text = self._render_head(rule.predicate, prob, var_policy)
-            body_text = self._render_body(cond, context, var_policy)
+            head_text = self._render_head(rule.predicate, prob, var_policy, rel_mode)
+            body_text = self._render_body(
+                cond,
+                context,
+                var_policy,
+                head_predicate=rule.predicate,
+                rel_mode=rel_mode,
+            )
             clauses.append(f"{head_text} :- {body_text}.")
         return "\n".join(clauses)
 
     def render_facts(self, facts: list[Instance], context: RenderContext) -> str:
         lines: list[str] = []
         var_policy = _VarNamePolicy(
-            mode=context.problog_var_mode,
-            prefix=context.problog_var_prefix,
+            mode=self.var_mode,
+            prefix=self.var_prefix,
         )
         for idx, fact in enumerate(facts):
             prob = resolve_probability(
                 fact.prob,
-                default_value=context.prob_config.default_fact_prob,
-                policy=context.prob_config.missing_prob_policy,
+                default_value=self.prob_config.default_fact_prob,
+                policy=self.prob_config.missing_prob_policy,
                 context=f"fact {idx}",
             )
             pred_name, arity, runtime_handler = self._resolve_predicate(fact.schema_id, context)
@@ -177,8 +195,8 @@ class ProbLogRenderer(Renderer):
 
     def render_query(self, query: Query, context: RenderContext) -> str:
         var_policy = _VarNamePolicy(
-            mode=context.problog_var_mode,
-            prefix=context.problog_var_prefix,
+            mode=self.var_mode,
+            prefix=self.var_prefix,
         )
         if query.predicate_id is not None:
             pred_name, arity, runtime_handler = self._resolve_predicate(query.predicate_id, context)
@@ -212,17 +230,40 @@ class ProbLogRenderer(Renderer):
             parts.append(self.render_queries(queries, context))
         return "\n\n".join(part for part in parts if part)
 
-    def _render_head(self, predicate, prob: float, var_policy: _VarNamePolicy) -> str:
-        terms = ", ".join(self._render_term(t, var_policy) for t in self._head_terms(predicate))
+    def _render_head(
+        self,
+        predicate,
+        prob: float,
+        var_policy: _VarNamePolicy,
+        rel_mode: Literal["none", "flattened", "composed"],
+    ) -> str:
+        terms = ", ".join(self._render_term(t, var_policy) for t in self._head_terms(predicate, rel_mode))
         prefix = f"{prob}::" if prob is not None else ""
         if predicate.arity == 0:
             return f"{prefix}{predicate.name}"
         return f"{prefix}{predicate.name}({terms})"
 
-    def _render_body(self, body: Cond, context: RenderContext, var_policy: _VarNamePolicy) -> str:
-        if not body.literals:
+    def _render_body(
+        self,
+        body: Cond,
+        context: RenderContext,
+        var_policy: _VarNamePolicy,
+        *,
+        head_predicate,
+        rel_mode: Literal["none", "flattened", "composed"],
+    ) -> str:
+        rendered_literals: list[str] = []
+        if rel_mode == "composed" and getattr(head_predicate, "kind", None) == "rel":
+            rendered_literals.extend(
+                self._render_rel_binding_literals(head_predicate, context, var_policy)
+            )
+        for lit in body.literals:
+            text = self._render_literal(lit, context, var_policy)
+            if text not in rendered_literals:
+                rendered_literals.append(text)
+        if not rendered_literals:
             return "true"
-        return ", ".join(self._render_literal(lit, context, var_policy) for lit in body.literals)
+        return ", ".join(rendered_literals)
 
     def _render_literal(self, literal, context: RenderContext, var_policy: _VarNamePolicy) -> str:
         if isinstance(literal, Ref):
@@ -302,8 +343,12 @@ class ProbLogRenderer(Renderer):
             return self._render_const(Const(value=term))
         raise RenderError("Ref term must be Var/Const.")
 
-    def _head_terms(self, predicate) -> list[ExprIR]:
-        if getattr(predicate, "kind", None) == "rel":
+    def _head_terms(
+        self,
+        predicate,
+        rel_mode: Literal["none", "flattened", "composed"],
+    ) -> list[ExprIR]:
+        if getattr(predicate, "kind", None) == "rel" and rel_mode in {"none", "composed"}:
             prop_names = [
                 arg.name
                 for arg in (getattr(predicate, "props", None) or [])
@@ -328,22 +373,53 @@ class ProbLogRenderer(Renderer):
             atom = f"{pred_name}({', '.join(terms)})" if arity > 0 else pred_name
         return f"\\+ {atom}" if negate else atom
 
+    def _render_rel_binding_literals(
+        self,
+        rel_predicate,
+        context: RenderContext,
+        var_policy: _VarNamePolicy,
+    ) -> list[str]:
+        sub_schema_id = getattr(rel_predicate, "sub_schema_id", None)
+        obj_schema_id = getattr(rel_predicate, "obj_schema_id", None)
+        if not sub_schema_id or not obj_schema_id:
+            raise RenderError("Rel-head binding requires valid sub/obj schema_id.")
+        sub_schema = context.schema.get(sub_schema_id)
+        obj_schema = context.schema.get(obj_schema_id)
+        sub_terms = [Var(f"sub_{arg.name}") for arg in sub_schema.signature if arg.name]
+        obj_terms = [Var(f"obj_{arg.name}") for arg in obj_schema.signature if arg.name]
+
+        sub_ref = Ref(schema=sub_schema, terms=sub_terms)
+        obj_ref = Ref(schema=obj_schema, terms=obj_terms)
+        sub_bind = Unify(lhs=Var("Sub"), rhs=sub_ref)
+        obj_bind = Unify(lhs=Var("Obj"), rhs=obj_ref)
+
+        return [
+            self._render_expr(sub_bind, context, var_policy),
+            self._render_expr(obj_bind, context, var_policy),
+            self._render_ref(sub_ref, context, negate=False, var_policy=var_policy),
+            self._render_ref(obj_ref, context, negate=False, var_policy=var_policy),
+        ]
+
+    def _validated_render_configs(self, rule: Rule) -> dict[str, object]:
+        configs = dict(rule.render_configs or {})
+        allowed = {"var_mode", "var_prefix", "rel_mode"}
+        unknown = sorted(key for key in configs if key not in allowed)
+        if unknown:
+            raise RenderError(
+                f"Unknown render_configs keys: {unknown}. "
+                f"Supported keys: {sorted(allowed)}."
+            )
+        return configs
+
     def _resolve_var_rendering(
-        self, rule: Rule, context: RenderContext
+        self, configs: dict[str, object]
     ) -> tuple[Literal["error", "sanitize", "prefix", "capitalize"], str]:
-        mode: str = context.problog_var_mode
-        prefix = context.problog_var_prefix
-        hints = rule.render_hints or {}
-        if "problog_var_mode" in hints:
-            mode = str(hints["problog_var_mode"])
-        if "problog_var_prefix" in hints:
-            prefix = str(hints["problog_var_prefix"])
-        problog_hints = hints.get("problog")
-        if isinstance(problog_hints, dict):
-            if "var_mode" in problog_hints:
-                mode = str(problog_hints["var_mode"])
-            if "var_prefix" in problog_hints:
-                prefix = str(problog_hints["var_prefix"])
+        mode: str = self.var_mode
+        prefix = self.var_prefix
+        if "var_mode" in configs:
+            mode = str(configs["var_mode"])
+        if "var_prefix" in configs:
+            prefix = str(configs["var_prefix"])
         normalized_mode = mode.strip().lower()
         allowed = {"error", "sanitize", "prefix", "capitalize"}
         if normalized_mode not in allowed:
@@ -354,6 +430,22 @@ class ProbLogRenderer(Renderer):
         if not isinstance(prefix, str) or not prefix:
             prefix = "VAR_"
         return normalized_mode, prefix
+
+    def _resolve_rel_mode(
+        self, configs: dict[str, object]
+    ) -> Literal["none", "flattened", "composed"]:
+        mode: str = self.rel_mode
+        if "rel_mode" in configs:
+            mode = str(configs["rel_mode"])
+
+        normalized_mode = mode.strip().lower()
+        allowed = {"none", "flattened", "composed"}
+        if normalized_mode not in allowed:
+            raise RenderError(
+                f"Unknown problog rel mode: {mode}. "
+                f"Expected one of {sorted(allowed)}."
+            )
+        return normalized_mode  # type: ignore[return-value]
 
     def _render_const(self, const: Const) -> str:
         value = const.value

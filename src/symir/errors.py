@@ -15,10 +15,6 @@ class FactStoreError(IRBaseError):
     """Raised when loading or mapping fact data fails."""
 
 
-class RuleRegistryError(IRBaseError):
-    """Raised when rule registry operations fail."""
-
-
 class MappingError(IRBaseError):
     """Raised when mapping IR to a target language fails."""
 

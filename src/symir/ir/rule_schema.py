@@ -53,24 +53,36 @@ class Cond:
 class Rule:
     predicate: PredicateSchema
     conditions: list[Cond] = field(default_factory=list)
-    render_hints: dict[str, Any] | None = None
+    render_configs: dict[str, Any] | None = None
+
+    def __post_init__(self) -> None:
+        if self.render_configs is not None and not isinstance(self.render_configs, dict):
+            raise SchemaError("Rule render_configs must be a dict if provided.")
+
+    @property
+    def render_hints(self) -> dict[str, Any] | None:
+        """Backward-compatible alias for older field naming."""
+        return self.render_configs
 
     def to_dict(self) -> dict[str, Any]:
         data = self.predicate.to_dict()
         data["conditions"] = [cond.to_dict() for cond in self.conditions]
-        if self.render_hints is not None:
-            data["render_hints"] = self.render_hints
+        if self.render_configs is not None:
+            data["render_configs"] = self.render_configs
         return data
 
     @staticmethod
     def from_dict(data: dict[str, Any]) -> "Rule":
-        render_hints = data.get("render_hints")
-        if render_hints is not None and not isinstance(render_hints, dict):
-            raise SchemaError("Rule render_hints must be a dict if provided.")
+        render_configs = data.get("render_configs")
+        legacy_render_hints = data.get("render_hints")
+        if render_configs is None:
+            render_configs = legacy_render_hints
+        if render_configs is not None and not isinstance(render_configs, dict):
+            raise SchemaError("Rule render_configs must be a dict if provided.")
         return Rule(
             predicate=PredicateSchema.from_dict(data),
             conditions=[Cond.from_dict(c) for c in data.get("conditions", [])],
-            render_hints=render_hints,
+            render_configs=render_configs,
         )
 
 

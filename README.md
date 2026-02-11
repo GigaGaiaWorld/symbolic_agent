@@ -18,7 +18,7 @@ pip install -e .
 
 - `ir/`: Core IR types and predicate schemas (`Fact`/`Rel`/`FactLayer`), plus `Instance`.
 - `fact_store/`: CSV-backed fact loading (preferred: `CSVProvider`).
-- `rules/`: Rule concepts, registry persistence, and constraint schemas (Pydantic + JSON schema).
+- `rules/`: Rule constraint schemas (Pydantic + JSON schema), library specs, and runtime validation.
 - `mappers/`: Target language mapping (ProbLog implemented).
 - `rule_ir.py`: Unified entrypoint for rule schema/IR (rules, filters, providers, renderers).
 - `tests/`: Minimal tests for CSV loading, schema generation, and mapping.
@@ -1065,43 +1065,48 @@ employment = Rel(
     obj=company,
     props=[ArgSpec("Since:int"), ArgSpec("Title:string")],
 )
-schema = FactLayer([person, company, employment])
+factlayer = FactLayer([person, company, employment])
 
-# renderer rel-head convention:
-# [Sub, Obj, <prop vars...>]
-# endpoint keys remain in body literals.
+# rel head default rendering (rel_mode="none"):
+# employment(Sub, Obj, Since, Title) :- ...
+# (no auto-injected binding/ref literals)
 cond = Cond(
     literals=[
-        # structured binding style:
-        Expr(expr=Unify(Var("Sub"), Ref(person, [Var("sub_Name"), Var("sub_Addr")]))),
-        Expr(expr=Unify(Var("Obj"), Ref(company, [Var("obj_Company")]))),
-        # optional non-binding style:
         Ref(schema=person, terms=[Var("sub_Name"), Var("sub_Addr")]),
         Ref(schema=company, terms=[Var("obj_Company")]),
-        
         Expr(expr=Unify(Var("Since"), Const(2020))),
         Expr(expr=Unify(Var("Title"), Const("researcher"))),
-        # optional structured binding style:
-
+        Expr(expr=Unify(Var("Sub"), Call("person", [Var("sub_Name"), Var("sub_Addr")]))),
+        Expr(expr=Unify(Var("Obj"), Call("company", [Var("obj_Company")]))),
     ],
     prob=0.7,
 )
 rule = Rule(predicate=employment, conditions=[cond])
+```
 
-text = ProbLogRenderer().render_rule(rule, RenderContext(schema=factlayer, problog_var_mode="sanitize"))
+Renderer-level configuration example:
+
+```python
+renderer = ProbLogRenderer(
+    var_mode="sanitize",
+    var_prefix="VAR_",
+    rel_mode="none",
+    # optional: prob_config=ProbabilityConfig(...)
+)
+text = renderer.render_rule(rule, RenderContext(schema=factlayer, ...))
 ```
 
 Rule conventions (data-template first):
 
 - there is no rule-level `policy` field in `Rule` payload.
 - rule payload is canonical predicate schema fields (`Fact`/`Rel`) plus `conditions`.
-- convention logic is user-authored in `conditions`; renderer does not auto-insert hidden literals.
+- convention logic is user-authored in `conditions`, except optional rel rendering modes (see below).
 - `Rule.from_dict(rule.to_dict())` round-trips this canonical shape.
 
 Rel naming convention (recommended):
 
 - flattened style: use rel signature variable names directly (`sub_*`, `obj_*`, props).
-- compound style: add `Sub`/`Obj` variables and explicit `Unify(...)` bindings.
+- composed style: use `Sub`/`Obj` variables and explicit `Unify(...)` bindings.
 - because `Rel.derived_signature` already prefixes endpoint args, you do not need custom renaming rules.
 
 Flattened style example:
@@ -1137,13 +1142,51 @@ Design/validation notes:
 - `Ref(...)` enforces arity against schema.
 - `Const(...)` is type-checked against referenced `ArgSpec.datatype`.
 - variable cross-literal type unification is currently not enforced globally.
-- for rel-head rendering, `ProbLogRenderer` uses `[Sub, Obj, <props...>]` (not flattened key fields).
+- for rel-head rendering, default mode is `rel_mode="none"`:
+  - head is composed: `[Sub, Obj, <props...>]`,
+  - body is unchanged (no auto inserted literals).
 - ProbLog variable rendering is configurable:
   - default: `sanitize` (auto converts invalid variable names to uppercase-leading valid tokens),
-  - per-rule override: `Rule(..., render_hints={"problog_var_mode": "error|sanitize|prefix|capitalize", "problog_var_prefix": "VAR_"})`,
-  - global default override: `RenderContext(..., problog_var_mode="...", problog_var_prefix="...")`.
+  - renderer defaults: `ProbLogRenderer(var_mode="...", var_prefix="...")`,
+  - per-rule override: `Rule(..., render_configs={"var_mode": "error|sanitize|prefix|capitalize", "var_prefix": "VAR_"})`,
+  - priority: per-rule override > renderer defaults.
+- Rel rendering mode is configurable (renderer + per-rule override):
+  - renderer default: `ProbLogRenderer(rel_mode="none|flattened|composed")`,
+  - per-rule override: `Rule(..., render_configs={"rel_mode": "none|flattened|composed"})`,
+  - priority: per-rule override > renderer default.
 - `Ref` can appear inside `Expr` (boolean expression context).
 - negated `Ref` is supported as literal (`Ref(..., negated=True)`), but not inside expression rendering context.
+
+Rel mode details:
+
+- `none` (default):
+  - head terms use composed form: `Sub, Obj, <props...>`,
+  - body is rendered exactly as authored.
+- `flattened`:
+  - head terms use flattened rel signature: `sub_*`, `obj_*`, `<props...>`,
+  - body is rendered exactly as authored.
+- `composed`:
+  - head terms use composed form: `Sub, Obj, <props...>`,
+  - each condition gets auto prelude literals before user literals:
+    - `Sub = sub_fact(...)`
+    - `Obj = obj_fact(...)`
+    - `sub_fact(...)`
+    - `obj_fact(...)`
+  - duplicates are removed if user already authored the same literals.
+
+Quick output examples for the same rel-head rule (`employment`, props=`Since, Title`):
+
+- `rel_mode="none"`:
+  - `0.7::employment(Sub, Obj, Since, Title) :- <your literals...>.`
+- `rel_mode="flattened"`:
+  - `0.7::employment(Sub_Name, Obj_Company, Since, Title) :- <your literals...>.`
+- `rel_mode="composed"`:
+  - `0.7::employment(Sub, Obj, Since, Title) :- Sub = person(...), Obj = company(...), person(...), company(...), <your literals...>.`
+
+Important:
+
+- `Ref(schema=<Rel>, terms=[...])` in IR remains flattened-only (based on rel signature).
+- mode changes renderer output only; it does not alter IR or stored rule payloads.
 
 Serialized rule shape (`Rule.to_dict()`):
 
