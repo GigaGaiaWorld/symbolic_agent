@@ -30,7 +30,7 @@ class DataProvider:
 
 @dataclass(frozen=True)
 class CSVSource:
-    predicate_id: str
+    schema: PredicateSchema
     file: str
     columns: list[str]
     prob_column: Optional[str] = None
@@ -60,7 +60,7 @@ class CSVProvider(DataProvider):
             raise ProviderError("datatype_cast must be one of: none, coerce, strict.")
         super().__init__(schema=schema, prob_config=prob_config)
         self.base_path = base_path
-        self.sources = {source.predicate_id: source for source in sources}
+        self.sources = {source.schema.schema_id: source for source in sources}
         self.datatype_cast = datatype_cast
 
     def query(
@@ -172,8 +172,8 @@ class CSVProvider(DataProvider):
         """Build rel instances by matching facts against CSV rows."""
         if not isinstance(builder.rel, Rel):
             raise ProviderError("RelBuilder must be constructed with a Rel schema.")
-        if builder.rel.schema_id != source.predicate_id:
-            raise ProviderError("CSVSource predicate_id does not match RelBuilder rel schema_id.")
+        if builder.rel.schema_id != source.schema.schema_id:
+            raise ProviderError("CSVSource schema does not match RelBuilder rel schema_id.")
         rows = self.read_rows(
             source,
             maps=maps,

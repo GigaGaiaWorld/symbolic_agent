@@ -217,7 +217,7 @@ class ProbLogRenderer(Renderer):
         return [Var(arg.name) for arg in predicate.signature]
 
     def _render_ref(self, ref: Ref, context: RenderContext, *, negate: bool) -> str:
-        pred_name, arity, runtime_handler = self._resolve_predicate(ref.schema_id, context)
+        pred_name, arity, runtime_handler = self._resolve_predicate(ref.schema, context)
         terms = [self._render_term(t) for t in ref.terms]
         if runtime_handler is not None:
             atom = runtime_handler(terms)

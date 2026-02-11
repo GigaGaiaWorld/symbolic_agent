@@ -298,7 +298,7 @@ class PredicateSchema:
         for idx, arg in index_map.items():
             if arg.name in key_names:
                 key_values[arg.name or str(idx)] = terms[idx]
-        return InstanceRef(schema_id=self.schema_id, key_values=key_values)
+        return InstanceRef(schema=self.schema_id, key_values=key_values)
 
     @property
     def schema_id(self) -> str:
@@ -614,9 +614,11 @@ class FactSchema:
         return [pred for pred in self._predicates if pred.kind == "rel"]
 
     def names(self) -> dict[str, list[str]]:
+        fact_names = sorted((pred.name for pred in self.facts()), key=str.lower)
+        rel_names = sorted((pred.name for pred in self.rels()), key=str.lower)
         return {
-            "facts": [pred.name for pred in self.facts()],
-            "rels": [pred.name for pred in self.rels()],
+            "facts": fact_names,
+            "rels": rel_names,
         }
 
     def get(self, schema_id: str) -> PredicateSchema:
@@ -665,7 +667,8 @@ class FactSchema:
             raise SchemaError(f"Predicate {name} is not a rel schema.")
         return pred  # type: ignore[return-value]
 
-    def describe(self, schema_id: str) -> dict[str, object]:
+    def describe(self, schema: PredicateSchema | str) -> dict[str, object]:
+        schema_id = schema.schema_id if isinstance(schema, PredicateSchema) else str(schema)
         pred = self.get(schema_id)
         info: dict[str, object] = {
             "schema_id": pred.schema_id,
@@ -781,7 +784,13 @@ class FactSchema:
             by_id[rel.schema_id] = rel
         return FactSchema(facts + rels)
 
-    def view(self, schema_ids: Iterable[str]) -> "FactView":
+    def view(self, schemas: Iterable[PredicateSchema | str]) -> "FactView":
+        schema_ids: list[str] = []
+        for item in schemas:
+            if isinstance(item, PredicateSchema):
+                schema_ids.append(item.schema_id)
+            else:
+                schema_ids.append(str(item))
         return FactView(self, schema_ids)
 
     def view_from_filter(self, filt) -> "FactView":
@@ -804,11 +813,14 @@ class FactView:
         for schema_id in self.schema_ids:
             schema.get(schema_id)
 
-    def allows(self, schema_id: str) -> bool:
+    def allows(self, schema: PredicateSchema | str) -> bool:
+        schema_id = schema.schema_id if isinstance(schema, PredicateSchema) else str(schema)
         return schema_id in self.schema_ids
 
     def predicates(self) -> list[PredicateSchema]:
-        return [self.schema.get(schema_id) for schema_id in self.schema_ids]
+        return [
+            pred for pred in self.schema.predicates() if pred.schema_id in self.schema_ids
+        ]
 
     def facts(self) -> list[PredicateSchema]:
         return [pred for pred in self.predicates() if pred.kind == "fact"]
@@ -816,7 +828,8 @@ class FactView:
     def rels(self) -> list[PredicateSchema]:
         return [pred for pred in self.predicates() if pred.kind == "rel"]
 
-    def get(self, schema_id: str) -> PredicateSchema:
+    def get(self, schema: PredicateSchema | str) -> PredicateSchema:
+        schema_id = schema.schema_id if isinstance(schema, PredicateSchema) else str(schema)
         if schema_id not in self.schema_ids:
             raise SchemaError(f"Schema id not allowed in view: {schema_id}")
         return self.schema.get(schema_id)
@@ -840,12 +853,15 @@ class FactView:
         return schema_id
 
     def names(self) -> dict[str, list[str]]:
+        fact_names = sorted((pred.name for pred in self.facts()), key=str.lower)
+        rel_names = sorted((pred.name for pred in self.rels()), key=str.lower)
         return {
-            "facts": [pred.name for pred in self.facts()],
-            "rels": [pred.name for pred in self.rels()],
+            "facts": fact_names,
+            "rels": rel_names,
         }
 
-    def describe(self, schema_id: str) -> dict[str, object]:
+    def describe(self, schema: PredicateSchema | str) -> dict[str, object]:
+        schema_id = schema.schema_id if isinstance(schema, PredicateSchema) else str(schema)
         if schema_id not in self.schema_ids:
             raise SchemaError(f"Schema id not allowed in view: {schema_id}")
         return self.schema.describe(schema_id)

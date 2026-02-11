@@ -27,24 +27,22 @@ class RuleValidator:
         for body_index, body in enumerate(rule.conditions):
             for lit_index, literal in enumerate(body.literals):
                 if isinstance(literal, Ref):
-                    self._validate_ref_literal(literal, head_id, body_index, lit_index)
+                    self._validate_ref(literal, head_id, body_index, lit_index)
                 elif isinstance(literal, Expr):
                     self._validate_expr(literal.expr, head_id, body_index, lit_index)
                 else:  # pragma: no cover - safeguard
                     raise ValidationError("Unknown literal type.")
 
-    def _validate_ref_literal(
+    def _validate_ref(
         self,
         ref: Ref,
         head_id: str,
         body_index: int,
         lit_index: int,
     ) -> None:
-        pred_id = ref.schema_id
+        pred_id = ref.schema
         if pred_id not in self._allowed_predicate_ids:
-            raise ValidationError(
-                f"RefLiteral predicate not in allowed references: {pred_id}"
-            )
+            raise ValidationError(f"Ref predicate not in allowed references: {pred_id}")
         if pred_id == head_id:
             raise ValidationError(
                 f"Direct recursion detected: head {head_id} refers to itself in body {body_index}"
@@ -52,12 +50,12 @@ class RuleValidator:
         predicate = self.view.schema.get(pred_id)
         if len(ref.terms) != predicate.arity:
             raise ValidationError(
-                f"RefLiteral arity mismatch: expected {predicate.arity}, got {len(ref.terms)}"
+                f"Ref arity mismatch: expected {predicate.arity}, got {len(ref.terms)}"
             )
         for term, arg in zip(ref.terms, predicate.signature):
             if not isinstance(term, (Var, Const)):
                 raise ValidationError(
-                    f"RefLiteral term must be Var/Const at body {body_index} literal {lit_index}"
+                    f"Ref term must be Var/Const at body {body_index} literal {lit_index}"
                 )
             if isinstance(term, Const):
                 self._validate_const_type(term, arg.datatype, body_index, lit_index)
@@ -106,7 +104,7 @@ class RuleValidator:
         lit_index: int,
     ) -> None:
         if isinstance(expr, Ref):
-            self._validate_ref_literal(expr, head_id, body_index, lit_index)
+            self._validate_ref(expr, head_id, body_index, lit_index)
             return
         if isinstance(expr, Unify):
             self._validate_expr(expr.lhs, head_id, body_index, lit_index)

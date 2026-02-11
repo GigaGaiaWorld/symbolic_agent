@@ -89,32 +89,49 @@ problog_text = to_problog(program)
 This package also provides a **neutral, serializable rule IR** designed for rule generation (LLM or non-LLM).
 It is modular and ready for multi-backend rendering (ProbLog implemented, others stubbed).
 
-### Head var-only
-`HeadSchema` allows only variables. Any constants must be expressed in the body via `Unify` or comparison calls.
-
-### Bodies = rule branches (clause-level probability)
-One head + multiple bodies = multiple clauses:
+### Rule shape
+`Rule` is defined as `predicate + conditions` (no `HeadSchema`/`Body` wrappers):
 
 ```
-Head :- Body1.
-Head :- Body2.
+Rule(predicate=<Fact/Rel>, conditions=[Cond(...), Cond(...)])
 ```
 
-Probability is attached **per body/clause** (not on the rule itself). Missing values are resolved by
+Probability is attached **per condition/clause** (not on the rule itself). Missing values are resolved by
 `ProbabilityConfig` defaults.
 
 ### Literals
-- `RefLiteral`: references FactView predicates only; supports negation.
+- `Ref`: references FactView predicates only; supports negation.
 - `Expr`: structured ExprIR only (no raw strings).
+- `Ref(schema=...)` accepts predicate schema objects or instances; user construction does not take raw `schema_id` strings.
 
 ### Negation & restrictions
-- Allowed: negation (RefLiteral.negated, ExprIR.Not).
+- Allowed: negation (Ref.negated, ExprIR.Not).
 - Forbidden: recursion (direct recursion is blocked), aggregates, cut.
 
 ### FactSchema / FactView / Filter AST
 
 `FactSchema` defines canonical predicate schemas with stable `schema_id` (hash). `FactView` is a filtered subset and
 is the only set of predicates LLM may reference. Use Filter AST (`And`/`Or`/`Not`/`PredMatch`) or dict sugar.
+
+### Build Rel From Persisted Fact Schemas
+
+To create a new `Rel` schema from persisted data, first restore fact schemas as objects, then build `Rel(...)`.
+
+```python
+import json
+from symir.ir.fact_schema import FactLayer, Rel, ArgSpec
+
+registry = FactLayer.from_dict(json.load(open("schema.json", "r", encoding="utf-8")))
+person = registry.fact("person")
+company = registry.fact("company")
+
+works_at = Rel("works_at", sub=person, obj=company, props=[ArgSpec("Since:int")])
+registry = FactLayer([*registry.predicates(), works_at])
+```
+
+Notes:
+- `Rel` construction needs concrete fact schema objects; schema IDs alone are not enough.
+- `FactLayer` is rebuilt with a new predicate list when adding schemas.
 
 ### DataProvider abstraction
 `DataProvider.query(view, filter)` is the extension point. `CSVProvider` implements CSV-backed facts.
@@ -129,18 +146,17 @@ Configurable defaults with `ProbabilityConfig`:
 
 ```python
 from symir.rule_ir import (
-    ArgSpec, PredicateSchema, FactSchema, Var, HeadSchema,
-    RefLiteral, Body, Rule, ProbLogRenderer, RenderContext
+    ArgSpec, Fact, FactLayer, Var,
+    Ref, Cond, Rule, ProbLogRenderer, RenderContext
 )
 
-person = PredicateSchema("Person", 1, [ArgSpec("string")])
-schema = FactSchema([person])
-view = schema.view([person.schema_id])
+person = Fact("person", [ArgSpec("X:string")])
+schema = FactLayer([person])
+view = schema.view([person])
 
-head_pred = PredicateSchema("Resident", 1, [ArgSpec("string")])
-head = HeadSchema(predicate=head_pred, terms=[Var("X")])
-body = Body(literals=[Ref(schema_id=person.schema_id, terms=[Var("X")])], prob=0.7)
-rule = Rule(head=head, bodies=[body])
+head = Fact("resident", [ArgSpec("X:string")])
+cond = Cond(literals=[Ref(schema=person, terms=[Var("X")])], prob=0.7)
+rule = Rule(predicate=head, conditions=[cond])
 
 text = ProbLogRenderer().render_rule(rule, RenderContext(schema=schema))
 ```
@@ -178,9 +194,10 @@ If you need to perform structured constraint decoding on an LLM, use:
 from symir.rules.constraint_schemas import (
     build_pydantic_rule_model,
     build_responses_schema,
+    build_predicate_catalog,
 )
 
-# Constraint decoding only generates bodies (head is already provided by the system)
+# Constraint decoding only generates conditions (head is provided by application code)
 # Optional library input to allow library predicates/expressions
 
 model = build_pydantic_rule_model(view, library=None, mode="compact")
@@ -188,16 +205,27 @@ responses_schema = build_responses_schema(view, library=None, mode="compact")
 catalog = build_predicate_catalog(view, library=None)
 ```
 
+Notes:
+- payload decodes `conditions` only; application supplies rule head (`Fact`/`Rel`) when constructing `Rule`.
+- ref literal key is `schema` (predicate `schema_id`), not `schema_id`.
+- compact mode validates `args` by order against predicate signature.
+- strict JSON schema requires numeric `prob` per condition.
+
 
 ### APIs:
 ```python
 from symir.ir.fact_schema import ArgSpec, PredicateSchema, FactSchema, FactView
 from symir.ir.filters import FilterAST, PredMatch, And, Or, Not, filter_from_dict
 from symir.ir.expr_ir import Var, Const, Call, Unify, If, NotExpr, ExprIR
-from symir.ir.rule_schema import RefLiteral, Expr, HeadSchema, Body, Rule
+from symir.ir.rule_schema import Ref, Expr, Cond, Rule
 from symir.rules.validator import RuleValidator
 from symir.rules.library import Library, LibrarySpec
 from symir.rules.library_runtime import LibraryRuntime
+from symir.rules.constraint_schemas import (
+    build_pydantic_rule_model,
+    build_responses_schema,
+    build_predicate_catalog,
+)
 from symir.fact_store.provider import DataProvider, CSVProvider, CSVSource
 from symir.ir.instance import Instance
 from symir.mappers.renderers import (

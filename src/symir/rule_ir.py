@@ -15,7 +15,7 @@ from symir.ir.fact_schema import (
 from symir.ir.instance import Instance
 from symir.ir.filters import FilterAST, PredMatch, And, Or, Not, filter_from_dict
 from symir.ir.expr_ir import Var, Const, Call, Unify, If, NotExpr, ExprIR, Ref
-from symir.ir.rule_schema import RefLiteral, Expr, Cond, Rule, Query
+from symir.ir.rule_schema import Expr, Cond, Rule, Query
 from symir.rules.validator import RuleValidator
 from symir.rules.library import Library, LibrarySpec
 from symir.rules.library_runtime import LibraryRuntime
@@ -60,7 +60,6 @@ __all__ = [
     "If",
     "NotExpr",
     "ExprIR",
-    "RefLiteral",
     "Expr",
     "Cond",
     "Rule",

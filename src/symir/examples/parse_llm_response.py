@@ -6,8 +6,8 @@ import json
 from typing import Any
 
 from symir.rules.constraint_schemas import build_pydantic_rule_model
-from symir.ir.rule_schema import Rule, Cond, RefLiteral, Expr
-from symir.ir.expr_ir import Var, Const, expr_from_dict
+from symir.ir.rule_schema import Rule, Cond, Expr
+from symir.ir.expr_ir import Var, Const, Ref, expr_from_dict
 from symir.rules.validator import RuleValidator
 
 
@@ -25,9 +25,9 @@ def _extract_json(resp) -> dict[str, Any]:
 
 def _term_from_value(value: dict[str, Any]):
     if value["kind"] == "var":
-        return Var(name=value["name"], datatype=value.get("datatype"))
+        return Var(name=value["name"])
     if value["kind"] == "const":
-        return Const(value=value["value"], datatype=value.get("datatype"))
+        return Const(value=value["value"])
     raise ValueError(f"Unknown term kind: {value.get('kind')}")
 
 
@@ -62,8 +62,9 @@ def resp_to_rule(
                     terms = [_term_from_value(arg.value.model_dump()) for arg in lit.args]
                 else:
                     terms = [_term_from_value(term.model_dump()) for term in lit.terms]
+                pred = view.schema.get(lit.schema)
                 literals.append(
-                    RefLiteral(schema_id=lit.schema_id, terms=terms, negated=lit.negated)
+                    Ref(schema=pred, terms=terms, negated=lit.negated)
                 )
             elif lit.kind == "expr":
                 literals.append(Expr(expr=expr_from_dict(lit.expr.model_dump())))

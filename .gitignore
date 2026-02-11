@@ -9,3 +9,11 @@ build/
 .venv/
 venv/
 .env
+
+# Local scratch files
+/test.py
+/test.ipynb
+/test2.ipynb
+/README_backup.md
+/Docs.md
+/Logs/

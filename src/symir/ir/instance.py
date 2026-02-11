@@ -148,7 +148,7 @@ class Instance:
 
     def __init__(
         self,
-        schema: PredicateSchema | str,
+        schema: PredicateSchema,
         terms: list[object] | tuple[object, ...] | dict[str, object],
         *,
         registry: Optional[FactSchema] = None,
@@ -167,13 +167,8 @@ class Instance:
         if isinstance(schema, PredicateSchema):
             schema_obj = schema
             schema_id = schema.schema_id
-        elif isinstance(schema, str):
-            schema_id = schema
-            if registry is None:
-                raise SchemaError("Instance requires registry to resolve schema_id.")
-            schema_obj = registry.get(schema_id)
         else:
-            raise SchemaError("Instance schema must be a PredicateSchema or schema_id string.")
+            raise SchemaError("Instance schema must be a PredicateSchema (Fact/Rel).")
 
         kind = schema_obj.kind
         merge_policy = schema_obj.merge_policy

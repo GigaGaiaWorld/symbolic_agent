@@ -17,7 +17,7 @@ class TestRuleSchemaGen(unittest.TestCase):
             signature=[ArgSpec(spec="string"), ArgSpec(spec="string")],
         )
         schema = FactSchema([parent])
-        view = schema.view([parent.schema_id])
+        view = schema.view([parent])
         model = build_pydantic_rule_model(view, mode="compact")
         instance = model.model_validate(
             {
@@ -26,7 +26,7 @@ class TestRuleSchemaGen(unittest.TestCase):
                         "literals": [
                             {
                                 "kind": "ref",
-                                "schema_id": parent.schema_id,
+                                "schema": parent.schema_id,
                                 "args": [
                                     {"name": "p", "value": {"kind": "var", "name": "X"}},
                                     {"name": "c", "value": {"kind": "var", "name": "Y"}},

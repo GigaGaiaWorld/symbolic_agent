@@ -17,7 +17,6 @@ class Expr:
     def to_dict(self) -> dict[str, Any]:
         return {"kind": "expr", "expr": self.expr.to_dict()}
 
-RefLiteral = Ref
 Literal = Union[Ref, Expr]
 
 
@@ -101,7 +100,3 @@ class Query:
             predicate=PredicateSchema.from_dict(predicate) if predicate else None,
             terms=[expr_from_dict(t) for t in data.get("terms", [])],
         )
-
-
-# Backwards-compatible alias
-Body = Cond

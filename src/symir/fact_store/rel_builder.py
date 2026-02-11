@@ -89,12 +89,15 @@ class RelBuilder:
             )
 
             if self.key_mode == "strict":
-                if set(sub_keys) != set(sub_key_fields):
-                    missing = [k for k in sub_key_fields if k not in sub_keys]
-                    raise SchemaError(f"Missing sub key fields in row: {missing}")
-                if set(obj_keys) != set(obj_key_fields):
-                    missing = [k for k in obj_key_fields if k not in obj_keys]
-                    raise SchemaError(f"Missing obj key fields in row: {missing}")
+                missing_sub = [k for k in sub_key_fields if k not in sub_keys]
+                missing_obj = [k for k in obj_key_fields if k not in obj_keys]
+                if missing_sub or missing_obj:
+                    messages: list[str] = []
+                    if missing_sub:
+                        messages.append(f"Missing sub key fields in row: {missing_sub}")
+                    if missing_obj:
+                        messages.append(f"Missing obj key fields in row: {missing_obj}")
+                    raise SchemaError("; ".join(messages))
             else:
                 if not sub_keys or not obj_keys:
                     # No usable keys; skip in partial mode to avoid cartesian explosion.

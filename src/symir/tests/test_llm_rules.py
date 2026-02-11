@@ -29,7 +29,12 @@ class TestLLMRules(unittest.TestCase):
             arity=1,
             signature=[ArgSpec(spec="X:string")],
         )
-        body = Cond(literals=[Ref(schema_id="pred", terms=[Var("X")])], prob=0.5)
+        body_pred = PredicateSchema(
+            name="Person",
+            arity=1,
+            signature=[ArgSpec(spec="X:string")],
+        )
+        body = Cond(literals=[Ref(schema=body_pred, terms=[Var("X")])], prob=0.5)
         rule = Rule(predicate=head_pred, conditions=[body])
         loaded = Rule.from_dict(rule.to_dict())
         self.assertEqual(rule.predicate.schema_id, loaded.predicate.schema_id)
@@ -37,10 +42,10 @@ class TestLLMRules(unittest.TestCase):
 
     def test_multiple_conditions_render(self) -> None:
         schema = self._schema()
-        view = schema.view([p.schema_id for p in schema.predicates()])
-        person_id = schema.predicates()[0].schema_id
-        body1 = Cond(literals=[Ref(schema_id=person_id, terms=[Var("X")])], prob=0.5)
-        body2 = Cond(literals=[Ref(schema_id=person_id, terms=[Var("X")], negated=True)], prob=0.5)
+        view = schema.view(schema.predicates())
+        person = schema.predicates()[0]
+        body1 = Cond(literals=[Ref(schema=person, terms=[Var("X")])], prob=0.5)
+        body2 = Cond(literals=[Ref(schema=person, terms=[Var("X")], negated=True)], prob=0.5)
         head_pred = PredicateSchema(
             name="Resident",
             arity=1,
@@ -53,11 +58,11 @@ class TestLLMRules(unittest.TestCase):
         text = renderer.render_rule(rule, RenderContext(schema=schema))
         self.assertEqual(len(text.splitlines()), 2)
 
-    def test_ref_literal_not_in_view(self) -> None:
+    def test_ref_not_in_view(self) -> None:
         schema = self._schema()
         view = schema.view([])
-        person_id = schema.predicates()[0].schema_id
-        body = Cond(literals=[Ref(schema_id=person_id, terms=[Var("X")])], prob=0.5)
+        person = schema.predicates()[0]
+        body = Cond(literals=[Ref(schema=person, terms=[Var("X")])], prob=0.5)
         head_pred = PredicateSchema(
             name="Resident",
             arity=1,
@@ -67,11 +72,11 @@ class TestLLMRules(unittest.TestCase):
         with self.assertRaises(ValidationError):
             RuleValidator(view).validate(rule)
 
-    def test_negated_ref_literal_render(self) -> None:
+    def test_negated_ref_render(self) -> None:
         schema = self._schema()
-        view = schema.view([p.schema_id for p in schema.predicates()])
-        person_id = schema.predicates()[0].schema_id
-        body = Cond(literals=[Ref(schema_id=person_id, terms=[Var("X")], negated=True)], prob=0.5)
+        view = schema.view(schema.predicates())
+        person = schema.predicates()[0]
+        body = Cond(literals=[Ref(schema=person, terms=[Var("X")], negated=True)], prob=0.5)
         head_pred = PredicateSchema(
             name="Resident",
             arity=1,
@@ -84,16 +89,16 @@ class TestLLMRules(unittest.TestCase):
 
     def test_expr_serialization_and_render(self) -> None:
         expr = If(
-            cond=Call("gt", [Var("X"), Const(0, "int")]),
-            then=Unify(Var("Y"), Call("add", [Var("X"), Const(1, "int")])) ,
-            else_=Unify(Var("Y"), Const(0, "int")),
+            cond=Call("gt", [Var("X"), Const(0)]),
+            then=Unify(Var("Y"), Call("add", [Var("X"), Const(1)])) ,
+            else_=Unify(Var("Y"), Const(0)),
         )
         expr_dict = expr.to_dict()
         expr2 = expr_from_dict(expr_dict)
         self.assertEqual(expr, expr2)
 
         schema = self._schema()
-        view = schema.view([p.schema_id for p in schema.predicates()])
+        view = schema.view(schema.predicates())
         head_pred = PredicateSchema(
             name="Calc",
             arity=2,
@@ -107,9 +112,9 @@ class TestLLMRules(unittest.TestCase):
 
     def test_missing_probability_default(self) -> None:
         schema = self._schema()
-        view = schema.view([p.schema_id for p in schema.predicates()])
-        person_id = schema.predicates()[0].schema_id
-        body = Cond(literals=[Ref(schema_id=person_id, terms=[Var("X")])], prob=None)
+        view = schema.view(schema.predicates())
+        person = schema.predicates()[0]
+        body = Cond(literals=[Ref(schema=person, terms=[Var("X")])], prob=None)
         head_pred = PredicateSchema(
             name="Resident",
             arity=1,
@@ -133,7 +138,7 @@ class TestLLMRules(unittest.TestCase):
         self.assertEqual("query(Resident(X)).", text)
 
         person_id = schema.predicates()[0].schema_id
-        query_fact = Query(predicate_id=person_id, terms=[Const("alice", "string")])
+        query_fact = Query(predicate_id=person_id, terms=[Const("alice")])
         text2 = ProbLogRenderer().render_query(query_fact, RenderContext(schema=schema))
         self.assertEqual("query(Person(alice)).", text2)
 
