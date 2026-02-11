@@ -1,6 +1,6 @@
 import unittest
 
-from symir.errors import RenderError, ValidationError
+from symir.errors import RenderError, SchemaError, ValidationError
 from symir.ir.fact_schema import ArgSpec, PredicateSchema, FactSchema, Rel
 from symir.ir.expr_ir import Var, Const, Call, Unify, If, expr_from_dict, Ref
 from symir.ir.rule_schema import Expr, Cond, Rule, Query
@@ -44,6 +44,62 @@ class TestLLMRules(unittest.TestCase):
         self.assertEqual(rule.predicate.schema_id, loaded.predicate.schema_id)
         self.assertEqual(len(loaded.conditions), 1)
         self.assertEqual(loaded.render_configs, {"var_mode": "sanitize"})
+
+    def test_rule_from_dict_accepts_direct_exprir_literal(self) -> None:
+        head_pred = PredicateSchema(
+            name="Resident",
+            arity=1,
+            signature=[ArgSpec(spec="X:string")],
+        )
+        payload = head_pred.to_dict()
+        payload["conditions"] = [
+            {
+                "literals": [
+                    {
+                        "kind": "unify",
+                        "lhs": {"kind": "var", "name": "X"},
+                        "rhs": {"kind": "const", "value": "alice"},
+                    }
+                ],
+                "prob": 0.5,
+            }
+        ]
+        loaded = Rule.from_dict(payload)
+        self.assertEqual(len(loaded.conditions), 1)
+        self.assertIsInstance(loaded.conditions[0].literals[0], Expr)
+
+    def test_rule_to_dict_emits_direct_exprir_kind(self) -> None:
+        head_pred = PredicateSchema(
+            name="Resident",
+            arity=1,
+            signature=[ArgSpec(spec="X:string")],
+        )
+        rule = Rule(
+            predicate=head_pred,
+            conditions=[
+                Cond(
+                    literals=[Unify(Var("X"), Const("alice"))],
+                    prob=0.5,
+                )
+            ],
+        )
+        payload = rule.to_dict()
+        literal = payload["conditions"][0]["literals"][0]
+        self.assertEqual(literal["kind"], "unify")
+
+    def test_cond_rejects_non_literal_types(self) -> None:
+        with self.assertRaises(SchemaError):
+            Cond(literals=[Var("X")])  # type: ignore[list-item]
+
+    def test_cond_accepts_direct_exprir_node(self) -> None:
+        cond = Cond(
+            literals=[
+                Unify(Var("Y"), Call("add", [Var("X"), Const(1)])),
+            ],
+            prob=0.6,
+        )
+        self.assertEqual(len(cond.literals), 1)
+        self.assertIsInstance(cond.literals[0], Expr)
 
     def test_multiple_conditions_render(self) -> None:
         schema = self._schema()

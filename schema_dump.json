@@ -401,9 +401,9 @@
     },
     {
       "name": "works_at",
-      "arity": 3,
-      "schema_id": "1ffca3803c10a4b56a6de9da033d752ab9b2e851e0799e792ee6254ae41e2bc9",
-      "description": "person works at company",
+      "arity": 5,
+      "schema_id": "a5f8858737e6269dd45bd5226251545913b643d22cdaa6df5babccdf8aaedae8",
+      "description": null,
       "kind": "rel",
       "sub_schema_id": "947dcb81ad1ff55ae09ddff33b1a4cd7f259db9fd3a8b60f1be1186ee6ff2504",
       "obj_schema_id": "9ee7711705be81cec696a4eff71c3b719af5dfe4eef30f94b603ec3fd99c19c3",
@@ -416,7 +416,20 @@
           "Country"
         ]
       },
-      "props": [],
+      "props": [
+        {
+          "datatype": "int",
+          "role": null,
+          "namespace": null,
+          "arg_name": "since"
+        },
+        {
+          "datatype": "string",
+          "role": null,
+          "namespace": null,
+          "arg_name": "title"
+        }
+      ],
       "derived_signature": {
         "derived": true,
         "sub_args": [
@@ -455,7 +468,20 @@
             "arg_name": "obj_Country"
           }
         ],
-        "prop_args": []
+        "prop_args": [
+          {
+            "datatype": "int",
+            "role": "prop",
+            "namespace": null,
+            "arg_name": "since"
+          },
+          {
+            "datatype": "string",
+            "role": "prop",
+            "namespace": null,
+            "arg_name": "title"
+          }
+        ]
       }
     }
   ]

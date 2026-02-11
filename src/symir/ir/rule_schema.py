@@ -15,7 +15,9 @@ class Expr:
     expr: ExprIR
 
     def to_dict(self) -> dict[str, Any]:
-        return {"kind": "expr", "expr": self.expr.to_dict()}
+        # Canonical payload uses direct ExprIR kinds (unify/call/if/not/ref).
+        # "kind":"expr" wrapper is still accepted in from_dict for backward compatibility.
+        return self.expr.to_dict()
 
 Literal = Union[Ref, Expr]
 
@@ -28,14 +30,49 @@ def literal_from_dict(data: dict[str, Any]) -> Literal:
             raise SchemaError("Ref literal parsing failed.")
         return ref
     if kind == "expr":
-        return Expr(expr=expr_from_dict(data["expr"]))
-    raise SchemaError(f"Unknown Literal kind: {kind}")
+        expr_payload = data.get("expr")
+        if not isinstance(expr_payload, dict):
+            raise SchemaError("Expr literal requires dict payload in 'expr'.")
+        return Expr(expr=expr_from_dict(expr_payload))
+    # Backward-compatible payload: allow ExprIR kinds directly as body literals.
+    try:
+        expr = expr_from_dict(data)
+    except SchemaError as exc:
+        raise SchemaError(f"Unknown Literal kind: {kind}") from exc
+    if isinstance(expr, Ref):
+        return expr
+    return Expr(expr=expr)
 
 
 @dataclass(frozen=True)
 class Cond:
     literals: list[Literal] = field(default_factory=list)
     prob: Optional[float] = None
+
+    def __post_init__(self) -> None:
+        normalized: list[Literal] = []
+        for literal in self.literals:
+            if isinstance(literal, Ref):
+                normalized.append(literal)
+                continue
+            if isinstance(literal, Expr):
+                normalized.append(literal)
+                continue
+            if isinstance(literal, ExprIR):
+                if isinstance(literal, (Var, Const)):
+                    raise SchemaError(
+                        "Cond literals do not accept bare Var/Const. "
+                        "Use Ref or expression nodes (Call/Unify/If/NotExpr)."
+                    )
+                normalized.append(Expr(expr=literal))
+                continue
+            raise SchemaError("Cond literals must be Ref, Expr, or ExprIR nodes.")
+        object.__setattr__(self, "literals", normalized)
+        if self.prob is not None:
+            if not isinstance(self.prob, (int, float)):
+                raise SchemaError("Cond prob must be a number if provided.")
+            if not (0.0 <= float(self.prob) <= 1.0):
+                raise SchemaError("Cond prob must be within [0.0, 1.0].")
 
     def to_dict(self) -> dict[str, Any]:
         return {
@@ -45,7 +82,16 @@ class Cond:
 
     @staticmethod
     def from_dict(data: dict[str, Any]) -> "Cond":
-        lits = [literal_from_dict(item) for item in data.get("literals", [])]
+        if not isinstance(data, dict):
+            raise SchemaError("Cond payload must be a dict.")
+        items = data.get("literals", [])
+        if not isinstance(items, list):
+            raise SchemaError("Cond literals must be a list.")
+        lits: list[Literal] = []
+        for item in items:
+            if not isinstance(item, dict):
+                raise SchemaError("Cond literal entries must be dicts.")
+            lits.append(literal_from_dict(item))
         return Cond(literals=lits, prob=data.get("prob"))
 
 

@@ -1015,6 +1015,8 @@ from symir.rule_ir import (
 - `Const(value)`: constant term.
 - `Ref(schema=<predicate>, terms=[Var|Const, ...], negated=False)`: predicate literal.
 - `Expr(expr=<ExprIR>)`: expression literal wrapper.
+- ergonomic sugar: `Cond(literals=[Unify(...), Call(...), If(...), NotExpr(...), Ref(...)])` is supported;
+  non-`Ref` `ExprIR` nodes are auto-wrapped as `Expr`.
 - `Rule(predicate=<Fact/Rel>, conditions=[Cond(...)])`.
 
 `Ref` schema input contract:
