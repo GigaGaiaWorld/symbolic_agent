@@ -82,6 +82,53 @@ def build_pydantic_rule_model(
         name: str
         value: ExprTermModel
 
+    def _signature_hints(schema_id: str) -> list[str]:
+        info = predicate_info.get(schema_id)
+        if info is None:
+            expected = allowed_predicate_ids.get(schema_id, 0)
+            return [f"Arg{i + 1}" for i in range(expected)]
+        _, arity, signature, _ = info
+        if signature is None:
+            return [f"Arg{i + 1}" for i in range(arity)]
+        hints: list[str] = []
+        for idx, item in enumerate(signature):
+            datatype, _role, _namespace, arg_name = item
+            label = arg_name or f"Arg{idx + 1}"
+            if datatype:
+                label = f"{label} ({datatype})"
+            hints.append(label)
+        return hints
+
+    def _predicate_display_name(schema_id: str) -> str:
+        info = predicate_info.get(schema_id)
+        if info is None:
+            return schema_id
+        return info[0]
+
+    def _arity_error_message(
+        schema_id: str,
+        *,
+        expected: int,
+        got: int,
+        provided_arg_names: list[str] | None = None,
+    ) -> str:
+        expected_args = ", ".join(_signature_hints(schema_id))
+        provided_text = ""
+        if provided_arg_names:
+            provided_text = f" Provided arg names: {', '.join(provided_arg_names)}."
+        mode_hint = ""
+        if mode == "compact":
+            mode_hint = (
+                " Compact mode requires all args. "
+                "Arg names are descriptive/free-form; binding is by signature order "
+                "unless exact signature names are provided."
+            )
+        return (
+            f"Ref arity mismatch for predicate '{_predicate_display_name(schema_id)}' "
+            f"(schema={schema_id}): expected {expected}, got {got}. "
+            f"Expected args: {expected_args}.{provided_text}{mode_hint}"
+        )
+
     class CallModel(BaseModel):
         kind: Literal["call"] = "call"
         op: str
@@ -136,16 +183,21 @@ def build_pydantic_rule_model(
                 if self.terms is None:
                     raise ValueError("Ref terms required in verbose mode.")
                 if len(self.terms) != expected:
-                    raise ValueError(
-                        f"Ref arity mismatch: expected {expected}, got {len(self.terms)}"
-                    )
+                    raise ValueError(_arity_error_message(
+                        self.schema,
+                        expected=expected,
+                        got=len(self.terms),
+                    ))
             else:
                 if self.args is None:
                     raise ValueError("Ref args required in compact mode.")
                 if len(self.args) != expected:
-                    raise ValueError(
-                        f"Ref arity mismatch: expected {expected}, got {len(self.args)}"
-                    )
+                    raise ValueError(_arity_error_message(
+                        self.schema,
+                        expected=expected,
+                        got=len(self.args),
+                        provided_arg_names=[arg.name for arg in self.args],
+                    ))
             info = predicate_info.get(self.schema)
             if info is not None:
                 _, _, signature, _ = info
@@ -189,16 +241,21 @@ def build_pydantic_rule_model(
                 if self.terms is None:
                     raise ValueError("Ref terms required in verbose mode.")
                 if len(self.terms) != expected:
-                    raise ValueError(
-                        f"Ref arity mismatch: expected {expected}, got {len(self.terms)}"
-                    )
+                    raise ValueError(_arity_error_message(
+                        self.schema,
+                        expected=expected,
+                        got=len(self.terms),
+                    ))
             else:
                 if self.args is None:
                     raise ValueError("Ref args required in compact mode.")
                 if len(self.args) != expected:
-                    raise ValueError(
-                        f"Ref arity mismatch: expected {expected}, got {len(self.args)}"
-                    )
+                    raise ValueError(_arity_error_message(
+                        self.schema,
+                        expected=expected,
+                        got=len(self.args),
+                        provided_arg_names=[arg.name for arg in self.args],
+                    ))
             info = predicate_info.get(self.schema)
             if info is not None:
                 _, _, signature, _ = info
@@ -431,37 +488,62 @@ def build_responses_schema(
                 )
         ref_schema = {"anyOf": ref_items}
     else:
-        # compact: schema enum + args array
-        allowed_ids = [p.schema_id for p in allowed_preds]
-        if library is not None:
-            allowed_ids.extend(list(library.predicate_ids().keys()))
-        ref_schema = {
+        # compact: predicate-specific refs with fixed args length by arity.
+        ref_items: list[dict[str, Any]] = []
+        compact_arg_item = {
             "type": "object",
             "properties": {
-                "kind": {"type": "string", "const": "ref"},
-                "schema": {"type": "string", "enum": allowed_ids},
-                "args": {
-                    "type": "array",
-                    "items": {
-                        "type": "object",
-                        "properties": {
-                            "name": {"type": "string"},
-                            "value": {
-                                "anyOf": [
-                                    {"$ref": "#/$defs/var"},
-                                    {"$ref": "#/$defs/const"},
-                                ]
-                            },
-                        },
-                        "required": ["name", "value"],
-                        "additionalProperties": False,
-                    },
+                "name": {"type": "string"},
+                "value": {
+                    "anyOf": [
+                        {"$ref": "#/$defs/var"},
+                        {"$ref": "#/$defs/const"},
+                    ]
                 },
-                "negated": {"type": "boolean"},
             },
-            "required": ["kind", "schema", "args", "negated"],
+            "required": ["name", "value"],
             "additionalProperties": False,
         }
+        for pred in allowed_preds:
+            ref_items.append(
+                {
+                    "type": "object",
+                    "properties": {
+                        "kind": {"type": "string", "const": "ref"},
+                        "schema": {"type": "string", "const": pred.schema_id},
+                        "args": {
+                            "type": "array",
+                            "items": compact_arg_item,
+                            "minItems": pred.arity,
+                            "maxItems": pred.arity,
+                        },
+                        "negated": {"type": "boolean"},
+                    },
+                    "required": ["kind", "schema", "args", "negated"],
+                    "additionalProperties": False,
+                }
+            )
+        if library is not None:
+            for pred_id, spec in library.predicate_ids().items():
+                ref_items.append(
+                    {
+                        "type": "object",
+                        "properties": {
+                            "kind": {"type": "string", "const": "ref"},
+                            "schema": {"type": "string", "const": pred_id},
+                            "args": {
+                                "type": "array",
+                                "items": compact_arg_item,
+                                "minItems": spec.arity,
+                                "maxItems": spec.arity,
+                            },
+                            "negated": {"type": "boolean"},
+                        },
+                        "required": ["kind", "schema", "args", "negated"],
+                        "additionalProperties": False,
+                    }
+                )
+        ref_schema = {"anyOf": ref_items}
     expr_literal_schema = {
         "type": "object",
         "properties": {
@@ -494,23 +576,212 @@ def build_responses_schema(
     return _normalize_strict_schema(result)
 
 
-def build_predicate_catalog(view: FactView, library: Library | None = None) -> dict[str, Any]:
-    """Build a compact predicate catalog for LLM prompting (not for decoding)."""
+def _format_arg_inline(name: str | None, datatype: str | None) -> str:
+    arg_name = name or "Arg"
+    dtype = datatype or "any"
+    return f"'{arg_name}':({dtype})"
+
+
+def _build_catalog_head_block(
+    payload_mode: Literal["compact", "verbose"],
+    rel_mode: Literal["none", "flattened", "composed"],
+) -> str:
+    ref_compact = (
+        '{"kind":"ref","schema":"<schema_id>","args":[{"name":"ArgName","value":'
+        '{"kind":"var","name":"X"}}],"negated":false}'
+    )
+    ref_verbose = (
+        '{"kind":"ref","schema":"<schema_id>","terms":[{"kind":"var","name":"X"}],'
+        '"negated":false}'
+    )
+    lines = [
+        "Output JSON payload only (no prose).",
+        "Graph abstraction: fact = entity node; rel = relation edge.",
+        "Rel structure: Sub (subject endpoint), Obj (object endpoint), Props (edge attributes).",
+        "Top-level payload: {\"conditions\":[{\"literals\":[...],\"prob\":0.0~1.0}]}",
+        "Literal kinds: ref or expr.",
+        f"Ref literal syntax ({payload_mode} mode):",
+        f"- {ref_compact if payload_mode == 'compact' else ref_verbose}",
+        "Expr literal syntax: {\"kind\":\"expr\",\"expr\":Expr}",
+        "Expr forms: var, const, call, unify, if, not, ref.",
+        "Term forms: {\"kind\":\"var\",\"name\":\"X\"} | {\"kind\":\"const\",\"value\":...}.",
+        (
+            "Call op whitelist: eq|ne|lt|le|gt|ge|add|sub|mul|div|mod "
+            "(plus registered library expr ops)."
+        ),
+        (
+            "Argument meaning should be inferred from argument names and roles; "
+            "follow each predicate block argument order."
+        ),
+        f"Selected rel_mode for relation rendering context: {rel_mode}.",
+        f"Selected payload mode for this catalog: {payload_mode}.",
+        "Use only schema IDs listed in this catalog.",
+    ]
+    return "\n".join(lines)
+
+
+def _predicate_prompt_block(
+    pred: PredicateSchema,
+    view: FactView,
+    *,
+    payload_mode: Literal["compact", "verbose"],
+    rel_mode: Literal["none", "flattened", "composed"],
+) -> str:
+    lines = [
+        f"[name={pred.name} | id={pred.schema_id}]",
+        f"kind: {pred.kind}",
+        f"arity: {pred.arity}",
+        f"description: {pred.description or '-'}",
+    ]
+    if pred.kind == "fact":
+        args = ", ".join(
+            _format_arg_inline(arg.arg_name, arg.datatype) for arg in pred.signature
+        )
+        key_fields = list(pred.key_fields or [])
+        by_name = {arg.arg_name: arg for arg in pred.signature}
+        keys = ", ".join(
+            _format_arg_inline(name, by_name.get(name).datatype if name in by_name else "any")
+            for name in key_fields
+        )
+        lines.append("Context:")
+        lines.append(
+            f"- This predicate represents {pred.name} entities."
+            + (f" {pred.description}" if pred.description else "")
+        )
+        lines.append("Generation constraints:")
+        lines.append(f"- Args (required): {args or '-'}")
+        lines.append(f"- Key fields (structured): {keys or '-'}")
+        return "\n".join(lines)
+
+    sub_schema = view.schema.get(str(pred.sub_schema_id))
+    obj_schema = view.schema.get(str(pred.obj_schema_id))
+    sub_keys = list((pred.endpoints or {}).get("sub_key_fields", []))
+    obj_keys = list((pred.endpoints or {}).get("obj_key_fields", []))
+    sub_by_name = {arg.arg_name: arg for arg in sub_schema.signature}
+    obj_by_name = {arg.arg_name: arg for arg in obj_schema.signature}
+
+    sub_key_text = ", ".join(
+        _format_arg_inline(name, sub_by_name.get(name).datatype if name in sub_by_name else "any")
+        for name in sub_keys
+    )
+    obj_key_text = ", ".join(
+        _format_arg_inline(name, obj_by_name.get(name).datatype if name in obj_by_name else "any")
+        for name in obj_keys
+    )
+    props = list(pred.props or [])
+    props_text = ", ".join(_format_arg_inline(arg.arg_name, arg.datatype) for arg in props)
+    composed_order = ", ".join(
+        ["Sub", "Obj"] + [_format_arg_inline(arg.arg_name, arg.datatype) for arg in props]
+    )
+    flattened_order = ", ".join(
+        _format_arg_inline(arg.arg_name, arg.datatype) for arg in pred.signature
+    )
+
+    lines.append("Context:")
+    lines.append(
+        "- The subject entity (Sub) is "
+        f"a {sub_schema.name} node"
+        + (f": {sub_schema.description}" if sub_schema.description else ".")
+    )
+    lines.append(
+        "- The object entity (Obj) is "
+        f"a {obj_schema.name} node"
+        + (f": {obj_schema.description}" if obj_schema.description else ".")
+    )
+    lines.append(
+        "- Relation semantics: "
+        + (pred.description if pred.description else "No explicit description.")
+    )
+    lines.append("Generation constraints:")
+    lines.append(f"- Sub key args (structured, required): {sub_key_text or '-'}")
+    lines.append(f"- Obj key args (structured, required): {obj_key_text or '-'}")
+    lines.append(f"- Prop args (structured, required): {props_text or '-'}")
+    lines.append(f"- Required payload args: {flattened_order}")
+    selected_view = flattened_order if rel_mode == "flattened" else composed_order
+    lines.append(f"- Selected relation view (rel_mode={rel_mode}): {selected_view}")
+    lines.append(
+        "- If an arg is not semantically important for a condition, use a var placeholder "
+        "such as {'kind':'var','name':'_'} instead of dropping the arg."
+    )
+
+    return "\n".join(lines)
+
+
+def _library_prompt_block(pred_id: str, spec: LibrarySpec) -> str:
+    arg_types = list(spec.signature or [])
+    args = ", ".join(_format_arg_inline(f"Arg{idx + 1}", dtype) for idx, dtype in enumerate(arg_types))
+    lines = [
+        f"[name={spec.name} | id={pred_id}]",
+        "kind: library",
+        f"arity: {spec.arity}",
+        f"description: {spec.description or '-'}",
+        f"Args: {args or '-'}",
+    ]
+    return "\n".join(lines)
+
+
+def build_predicate_catalog(
+    view: FactView,
+    library: Library | None = None,
+    *,
+    style: Literal["structured", "prompt_blocks"] = "structured",
+    payload_mode: Literal["compact", "verbose"] = "compact",
+    rel_mode: Literal["none", "flattened", "composed"] = "flattened",
+) -> dict[str, Any]:
+    """Build predicate catalog for LLM prompting (not strict decoding schema)."""
+
+    if style not in {"structured", "prompt_blocks"}:
+        raise SchemaError("Catalog style must be 'structured' or 'prompt_blocks'.")
+    if payload_mode not in {"compact", "verbose"}:
+        raise SchemaError("Catalog payload_mode must be 'compact' or 'verbose'.")
+    if rel_mode not in {"none", "flattened", "composed"}:
+        raise SchemaError("Catalog rel_mode must be 'none', 'flattened', or 'composed'.")
 
     catalog: dict[str, Any] = {}
+    if style == "prompt_blocks":
+        catalog["head"] = _build_catalog_head_block(payload_mode, rel_mode)
+
     for pred in view.predicates():
-        catalog[pred.schema_id] = {
+        if style == "prompt_blocks":
+            catalog[pred.schema_id] = _predicate_prompt_block(
+                pred,
+                view,
+                payload_mode=payload_mode,
+                rel_mode=rel_mode,
+            )
+            continue
+
+        entry: dict[str, Any] = {
             "name": pred.name,
+            "kind": pred.kind,
             "arity": pred.arity,
             "arg_types": [arg.datatype for arg in pred.signature],
+            "arg_names": [arg.arg_name for arg in pred.signature],
             "description": pred.description,
         }
+        if pred.kind == "fact":
+            entry["key_fields"] = list(pred.key_fields or [])
+        else:
+            entry["sub_schema_id"] = pred.sub_schema_id
+            entry["obj_schema_id"] = pred.obj_schema_id
+            entry["endpoints"] = pred.endpoints
+            entry["props"] = [
+                {"name": arg.arg_name, "datatype": arg.datatype}
+                for arg in (pred.props or [])
+            ]
+        catalog[pred.schema_id] = entry
+
     if library is not None:
         for pred_id, spec in library.predicate_ids().items():
+            if style == "prompt_blocks":
+                catalog[pred_id] = _library_prompt_block(pred_id, spec)
+                continue
             catalog[pred_id] = {
                 "name": spec.name,
+                "kind": "library",
                 "arity": spec.arity,
                 "arg_types": spec.signature or [],
+                "arg_names": [f"Arg{idx + 1}" for idx in range(spec.arity)],
                 "description": spec.description,
             }
     return catalog

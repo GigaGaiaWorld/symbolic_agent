@@ -31,6 +31,15 @@ def _term_from_value(value: dict[str, Any]):
     raise ValueError(f"Unknown term kind: {value.get('kind')}")
 
 
+def _compact_args_to_ordered_terms(pred, args) -> list[Var | Const]:
+    expected_names = [arg.arg_name or f"Arg{i + 1}" for i, arg in enumerate(pred.signature)]
+    provided = {arg.name: _term_from_value(arg.value.model_dump()) for arg in args}
+    if len(provided) == len(args) and all(name in provided for name in expected_names):
+        return [provided[name] for name in expected_names]
+    # Fallback for legacy payloads that rely on positional order only.
+    return [_term_from_value(arg.value.model_dump()) for arg in args]
+
+
 def resp_to_rule(
     resp,
     *,
@@ -58,11 +67,11 @@ def resp_to_rule(
         literals = []
         for lit in body.literals:
             if lit.kind == "ref":
+                pred = view.schema.get(lit.schema)
                 if mode == "compact":
-                    terms = [_term_from_value(arg.value.model_dump()) for arg in lit.args]
+                    terms = _compact_args_to_ordered_terms(pred, lit.args)
                 else:
                     terms = [_term_from_value(term.model_dump()) for term in lit.terms]
-                pred = view.schema.get(lit.schema)
                 literals.append(
                     Ref(schema=pred, terms=terms, negated=lit.negated)
                 )

@@ -88,36 +88,6 @@
       ]
     },
     {
-      "name": "person_profile",
-      "arity": 3,
-      "schema_id": "eee6243eddfdaf8c58a471bee30dd40021d6821941b396e3104c10d804860f2d",
-      "description": "Person with address and age",
-      "kind": "fact",
-      "signature": [
-        {
-          "datatype": "string",
-          "role": "key",
-          "namespace": "person",
-          "arg_name": "Name"
-        },
-        {
-          "datatype": "string",
-          "role": null,
-          "namespace": "address",
-          "arg_name": "Param"
-        },
-        {
-          "datatype": "int",
-          "role": null,
-          "namespace": "person",
-          "arg_name": "Param2"
-        }
-      ],
-      "key_fields": [
-        "Name"
-      ]
-    },
-    {
       "name": "are_friends",
       "arity": 2,
       "schema_id": "6c7ed4e89be23508f56aa56f4a775e141b18f4e415a4bf7a26d0b9b9fdc74f03",
