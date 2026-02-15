@@ -1,7 +1,7 @@
 import unittest
 
 from symir.errors import RenderError, SchemaError, ValidationError
-from symir.ir.fact_schema import ArgSpec, PredicateSchema, FactSchema, Rel
+from symir.ir.fact_schema import Value, PredicateSchema, FactSchema, Rel
 from symir.ir.expr_ir import Var, Const, Call, Unify, If, expr_from_dict, Ref
 from symir.ir.rule_schema import Expr, Cond, Rule, Query
 from symir.rules.validator import RuleValidator
@@ -14,12 +14,12 @@ class TestLLMRules(unittest.TestCase):
         person = PredicateSchema(
             name="Person",
             arity=1,
-            signature=[ArgSpec(spec="string")],
+            signature=[Value(None, "string")],
         )
         lives = PredicateSchema(
             name="LivesIn",
             arity=2,
-            signature=[ArgSpec(spec="string"), ArgSpec(spec="string")],
+            signature=[Value(None, "string"), Value(None, "string")],
         )
         return FactSchema([person, lives])
 
@@ -27,12 +27,12 @@ class TestLLMRules(unittest.TestCase):
         head_pred = PredicateSchema(
             name="Resident",
             arity=1,
-            signature=[ArgSpec(spec="X:string")],
+            signature=[Value("X", "string")],
         )
         body_pred = PredicateSchema(
             name="Person",
             arity=1,
-            signature=[ArgSpec(spec="X:string")],
+            signature=[Value("X", "string")],
         )
         body = Cond(literals=[Ref(schema=body_pred, terms=[Var("X")])], prob=0.5)
         rule = Rule(
@@ -49,7 +49,7 @@ class TestLLMRules(unittest.TestCase):
         head_pred = PredicateSchema(
             name="Resident",
             arity=1,
-            signature=[ArgSpec(spec="X:string")],
+            signature=[Value("X", "string")],
         )
         payload = head_pred.to_dict()
         payload["conditions"] = [
@@ -72,7 +72,7 @@ class TestLLMRules(unittest.TestCase):
         head_pred = PredicateSchema(
             name="Resident",
             arity=1,
-            signature=[ArgSpec(spec="X:string")],
+            signature=[Value("X", "string")],
         )
         rule = Rule(
             predicate=head_pred,
@@ -110,7 +110,7 @@ class TestLLMRules(unittest.TestCase):
         head_pred = PredicateSchema(
             name="Resident",
             arity=1,
-            signature=[ArgSpec(spec="X:string")],
+            signature=[Value("X", "string")],
         )
         rule = Rule(predicate=head_pred, conditions=[body1, body2])
 
@@ -127,7 +127,7 @@ class TestLLMRules(unittest.TestCase):
         head_pred = PredicateSchema(
             name="Resident",
             arity=1,
-            signature=[ArgSpec(spec="X:string")],
+            signature=[Value("X", "string")],
         )
         rule = Rule(predicate=head_pred, conditions=[body])
         with self.assertRaises(ValidationError):
@@ -141,7 +141,7 @@ class TestLLMRules(unittest.TestCase):
         head_pred = PredicateSchema(
             name="Resident",
             arity=1,
-            signature=[ArgSpec(spec="string")],
+            signature=[Value(None, "string")],
         )
         rule = Rule(predicate=head_pred, conditions=[body])
         RuleValidator(view).validate(rule)
@@ -163,7 +163,7 @@ class TestLLMRules(unittest.TestCase):
         head_pred = PredicateSchema(
             name="Calc",
             arity=2,
-            signature=[ArgSpec(spec="X:int"), ArgSpec(spec="Y:int")],
+            signature=[Value("X", "int"), Value("Y", "int")],
         )
         body = Cond(literals=[Expr(expr=expr2)], prob=0.8)
         rule = Rule(predicate=head_pred, conditions=[body])
@@ -179,7 +179,7 @@ class TestLLMRules(unittest.TestCase):
         head_pred = PredicateSchema(
             name="Resident",
             arity=1,
-            signature=[ArgSpec(spec="X:string")],
+            signature=[Value("X", "string")],
         )
         rule = Rule(predicate=head_pred, conditions=[body])
         RuleValidator(view).validate(rule)
@@ -192,7 +192,7 @@ class TestLLMRules(unittest.TestCase):
         head_pred = PredicateSchema(
             name="Resident",
             arity=1,
-            signature=[ArgSpec(spec="string")],
+            signature=[Value(None, "string")],
         )
         query = Query(predicate=head_pred, terms=[Var("X")])
         text = ProbLogRenderer().render_query(query, RenderContext(schema=schema))
@@ -207,13 +207,13 @@ class TestLLMRules(unittest.TestCase):
         person = PredicateSchema(
             name="person",
             arity=1,
-            signature=[ArgSpec(spec="x:string")],
+            signature=[Value("x", "string")],
         )
         schema = FactSchema([person])
         head = PredicateSchema(
             name="resident",
             arity=1,
-            signature=[ArgSpec(spec="x:string")],
+            signature=[Value("x", "string")],
         )
         rule = Rule(
             predicate=head,
@@ -226,13 +226,13 @@ class TestLLMRules(unittest.TestCase):
         person = PredicateSchema(
             name="person",
             arity=1,
-            signature=[ArgSpec(spec="x:string")],
+            signature=[Value("x", "string")],
         )
         schema = FactSchema([person])
         head = PredicateSchema(
             name="resident",
             arity=1,
-            signature=[ArgSpec(spec="x:string")],
+            signature=[Value("x", "string")],
         )
         rule = Rule(
             predicate=head,
@@ -246,13 +246,13 @@ class TestLLMRules(unittest.TestCase):
         person = PredicateSchema(
             name="person",
             arity=1,
-            signature=[ArgSpec(spec="x:string")],
+            signature=[Value("x", "string")],
         )
         schema = FactSchema([person])
         head = PredicateSchema(
             name="resident",
             arity=1,
-            signature=[ArgSpec(spec="x:string")],
+            signature=[Value("x", "string")],
         )
         rule = Rule(
             predicate=head,
@@ -266,18 +266,20 @@ class TestLLMRules(unittest.TestCase):
         person = PredicateSchema(
             name="person",
             arity=2,
-            signature=[ArgSpec(spec="Name:string"), ArgSpec(spec="Addr:string")],
+            signature=[Value("Name", "string"), Value("Addr", "string")],
+            key_fields=["Name"],
         )
         company = PredicateSchema(
             name="company",
             arity=1,
-            signature=[ArgSpec(spec="Company:string")],
+            signature=[Value("Company", "string")],
+            key_fields=["Company"],
         )
         employment = Rel(
             "employment",
             sub=person,
             obj=company,
-            props=[ArgSpec("Since:int"), ArgSpec("Title:string")],
+            props=[Value("Since", "int"), Value("Title", "string")],
         )
         schema = FactSchema([person, company, employment])
         cond = Cond(
@@ -304,18 +306,20 @@ class TestLLMRules(unittest.TestCase):
         person = PredicateSchema(
             name="person",
             arity=2,
-            signature=[ArgSpec(spec="Name:string"), ArgSpec(spec="Addr:string")],
+            signature=[Value("Name", "string"), Value("Addr", "string")],
+            key_fields=["Name"],
         )
         company = PredicateSchema(
             name="company",
             arity=1,
-            signature=[ArgSpec(spec="Company:string")],
+            signature=[Value("Company", "string")],
+            key_fields=["Company"],
         )
         employment = Rel(
             "employment",
             sub=person,
             obj=company,
-            props=[ArgSpec("Since:int"), ArgSpec("Title:string")],
+            props=[Value("Since", "int"), Value("Title", "string")],
         )
         schema = FactSchema([person, company, employment])
         cond = Cond(
@@ -342,14 +346,16 @@ class TestLLMRules(unittest.TestCase):
         person = PredicateSchema(
             name="person",
             arity=1,
-            signature=[ArgSpec(spec="Name:string")],
+            signature=[Value("Name", "string")],
+            key_fields=["Name"],
         )
         company = PredicateSchema(
             name="company",
             arity=1,
-            signature=[ArgSpec(spec="Company:string")],
+            signature=[Value("Company", "string")],
+            key_fields=["Company"],
         )
-        employment = Rel("employment", sub=person, obj=company, props=[ArgSpec("Since:int")])
+        employment = Rel("employment", sub=person, obj=company, props=[Value("Since", "int")])
         schema = FactSchema([person, company, employment])
         cond = Cond(
             literals=[Expr(expr=Unify(Var("Since"), Const(2020)))],
@@ -370,14 +376,16 @@ class TestLLMRules(unittest.TestCase):
         person = PredicateSchema(
             name="person",
             arity=2,
-            signature=[ArgSpec(spec="Name:string"), ArgSpec(spec="Addr:string")],
+            signature=[Value("Name", "string"), Value("Addr", "string")],
+            key_fields=["Name"],
         )
         company = PredicateSchema(
             name="company",
             arity=1,
-            signature=[ArgSpec(spec="Company:string")],
+            signature=[Value("Company", "string")],
+            key_fields=["Company"],
         )
-        employment = Rel("employment", sub=person, obj=company, props=[ArgSpec("Since:int")])
+        employment = Rel("employment", sub=person, obj=company, props=[Value("Since", "int")])
         schema = FactSchema([person, company, employment])
         cond = Cond(
             literals=[
@@ -403,14 +411,16 @@ class TestLLMRules(unittest.TestCase):
         person = PredicateSchema(
             name="person",
             arity=1,
-            signature=[ArgSpec(spec="Name:string")],
+            signature=[Value("Name", "string")],
+            key_fields=["Name"],
         )
         company = PredicateSchema(
             name="company",
             arity=1,
-            signature=[ArgSpec(spec="Company:string")],
+            signature=[Value("Company", "string")],
+            key_fields=["Company"],
         )
-        employment = Rel("employment", sub=person, obj=company, props=[ArgSpec("Since:int")])
+        employment = Rel("employment", sub=person, obj=company, props=[Value("Since", "int")])
         schema = FactSchema([person, company, employment])
         cond = Cond(
             literals=[Expr(expr=Unify(Var("Since"), Const(2020)))],

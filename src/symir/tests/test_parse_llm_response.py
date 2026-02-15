@@ -3,7 +3,7 @@ import unittest
 
 from symir.examples.parse_llm_response import resp_to_rule
 from symir.ir.expr_ir import Ref, Var
-from symir.ir.fact_schema import ArgSpec, Fact, FactSchema, PredicateSchema, Rel
+from symir.ir.fact_schema import Entity, Value, Fact, FactSchema, PredicateSchema, Rel
 
 
 class _MockResp:
@@ -13,23 +13,23 @@ class _MockResp:
 
 class TestParseLLMResponse(unittest.TestCase):
     def test_compact_args_are_bound_by_name(self) -> None:
-        person = Fact("person", [ArgSpec("Name:string", role="key")])
+        person = Fact("person", [Entity("Name", "string")])
         company = Fact(
             "company",
-            [ArgSpec("Company:string", role="key"), ArgSpec("Country:string", role="key")],
+            [Entity("Company", "string"), Entity("Country", "string")],
         )
         works_at = Rel(
             "works_at",
             sub=person,
             obj=company,
-            props=[ArgSpec("since:int"), ArgSpec("title:string")],
+            props=[Value("since", "int"), Value("title", "string")],
         )
         schema = FactSchema([person, company, works_at])
         view = schema.view([works_at])
         head = PredicateSchema(
             name="candidate",
             arity=1,
-            signature=[ArgSpec("Name:string")],
+            signature=[Value("Name", "string")],
         )
 
         payload = {

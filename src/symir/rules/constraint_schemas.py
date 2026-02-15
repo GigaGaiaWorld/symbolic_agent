@@ -7,7 +7,7 @@ from typing import Any, Literal, Annotated, Union
 from pydantic import BaseModel, Field, model_validator
 
 from symir.errors import SchemaError
-from symir.ir.fact_schema import FactView, PredicateSchema, ArgSpec
+from symir.ir.fact_schema import FactView, PredicateSchema, ArgField, Value
 from symir.rules.library import Library, LibrarySpec
 
 
@@ -295,11 +295,11 @@ def _ref_schema(
     schema_id: str,
     name: str,
     arity: int,
-    signature: list[ArgSpec] | None,
+    signature: list[ArgField] | None,
     description: str | None,
 ) -> dict[str, Any]:
     if signature is None:
-        signature = [ArgSpec(spec="any") for _ in range(arity)]
+        signature = [Value(name=f"Arg{i + 1}", datatype="any") for i in range(arity)]
     term_schema = {
         "anyOf": [
             {
@@ -482,7 +482,10 @@ def build_responses_schema(
             for pred_id, spec in library.predicate_ids().items():
                 signature = None
                 if spec.signature is not None:
-                    signature = [ArgSpec(spec=item) for item in spec.signature]
+                    signature = [
+                        Value(name=f"Arg{idx + 1}", datatype=item)
+                        for idx, item in enumerate(spec.signature)
+                    ]
                 ref_items.append(
                     _ref_schema(pred_id, spec.name, spec.arity, signature, spec.description)
                 )

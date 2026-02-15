@@ -4,13 +4,14 @@
     {
       "name": "city",
       "arity": 1,
-      "schema_id": "76ce9a0f477f12a51b0eafa5246dc3ea5272433cc766695ca7a8b9f85c2a060a",
+      "schema_id": "e90287e5fc11f7d5f016c2bd1feda96ac53e002ba7f67d4261f6aa3bb08d3f49",
       "description": "A city entity",
       "kind": "fact",
       "signature": [
         {
+          "kind": "entity",
           "datatype": "string",
-          "role": "name",
+          "role": "key",
           "namespace": "geo",
           "arg_name": "City"
         }
@@ -22,23 +23,26 @@
     {
       "name": "company",
       "arity": 3,
-      "schema_id": "9ee7711705be81cec696a4eff71c3b719af5dfe4eef30f94b603ec3fd99c19c3",
+      "schema_id": "9bbc9bce0d8470440a73ae16cccc3b7ff69c578217d92aed1ad76a7ca8258670",
       "description": "A company entity",
       "kind": "fact",
       "signature": [
         {
+          "kind": "entity",
           "datatype": "string",
           "role": "key",
-          "namespace": "org",
+          "namespace": null,
           "arg_name": "Company"
         },
         {
+          "kind": "value",
           "datatype": "float",
           "role": null,
-          "namespace": "org",
+          "namespace": null,
           "arg_name": "Revenue"
         },
         {
+          "kind": "entity",
           "datatype": "string",
           "role": "key",
           "namespace": "geo",
@@ -53,11 +57,12 @@
     {
       "name": "country",
       "arity": 1,
-      "schema_id": "0d7f321526421614cf75eb9cd18a2a7abfa8d1ca9cd3d19d327221903921fa8f",
+      "schema_id": "d27bbbdba88be1fc3b148800fe3718d1f90c403b7607bd2250703abbf8ea8430",
       "description": "A country entity",
       "kind": "fact",
       "signature": [
         {
+          "kind": "entity",
           "datatype": "string",
           "role": "key",
           "namespace": "geo",
@@ -71,12 +76,13 @@
     {
       "name": "person",
       "arity": 1,
-      "schema_id": "947dcb81ad1ff55ae09ddff33b1a4cd7f259db9fd3a8b60f1be1186ee6ff2504",
+      "schema_id": "210754ae39d0e3597a6a0e68247435f54784620a6e83ab40d46d3f11b20c0595",
       "description": "A person entity",
       "kind": "fact",
       "merge_policy": "keep_all",
       "signature": [
         {
+          "kind": "entity",
           "datatype": "string",
           "role": "key",
           "namespace": "person",
@@ -90,11 +96,11 @@
     {
       "name": "are_friends",
       "arity": 2,
-      "schema_id": "6c7ed4e89be23508f56aa56f4a775e141b18f4e415a4bf7a26d0b9b9fdc74f03",
+      "schema_id": "e0bc604ebb549d8c8aeb27dfa6ce2e91ae6eafbaa90d323bc73e825bf4e35d3c",
       "description": "person knows person",
       "kind": "rel",
-      "sub_schema_id": "947dcb81ad1ff55ae09ddff33b1a4cd7f259db9fd3a8b60f1be1186ee6ff2504",
-      "obj_schema_id": "947dcb81ad1ff55ae09ddff33b1a4cd7f259db9fd3a8b60f1be1186ee6ff2504",
+      "sub_schema_id": "210754ae39d0e3597a6a0e68247435f54784620a6e83ab40d46d3f11b20c0595",
+      "obj_schema_id": "210754ae39d0e3597a6a0e68247435f54784620a6e83ab40d46d3f11b20c0595",
       "endpoints": {
         "sub_key_fields": [
           "Name"
@@ -109,9 +115,10 @@
         "sub_args": [
           {
             "arg_name": "Sub",
-            "datatype": "Fact"
+            "datatype": "fact"
           },
           {
+            "kind": "entity",
             "datatype": "string",
             "role": "sub_key",
             "namespace": "person",
@@ -121,9 +128,10 @@
         "obj_args": [
           {
             "arg_name": "Obj",
-            "datatype": "Fact"
+            "datatype": "fact"
           },
           {
+            "kind": "entity",
             "datatype": "string",
             "role": "obj_key",
             "namespace": "person",
@@ -136,11 +144,11 @@
     {
       "name": "company_hq",
       "arity": 3,
-      "schema_id": "11d1c1e1efdd2cc30ec433b92b4d11dbb8f58df72725dab8da91f00f687f085e",
+      "schema_id": "baaef9fef0104e64940c53641aad85be27fa9d15e5299223df7ffa99284ae481",
       "description": "company HQ city",
       "kind": "rel",
-      "sub_schema_id": "9ee7711705be81cec696a4eff71c3b719af5dfe4eef30f94b603ec3fd99c19c3",
-      "obj_schema_id": "76ce9a0f477f12a51b0eafa5246dc3ea5272433cc766695ca7a8b9f85c2a060a",
+      "sub_schema_id": "9bbc9bce0d8470440a73ae16cccc3b7ff69c578217d92aed1ad76a7ca8258670",
+      "obj_schema_id": "e90287e5fc11f7d5f016c2bd1feda96ac53e002ba7f67d4261f6aa3bb08d3f49",
       "endpoints": {
         "sub_key_fields": [
           "Company",
@@ -156,21 +164,24 @@
         "sub_args": [
           {
             "arg_name": "Sub",
-            "datatype": "Fact"
+            "datatype": "fact"
           },
           {
+            "kind": "entity",
             "datatype": "string",
             "role": "sub_key",
-            "namespace": "org",
+            "namespace": null,
             "arg_name": "sub_Company"
           },
           {
+            "kind": "value",
             "datatype": "float",
             "role": "sub_attr",
-            "namespace": "org",
+            "namespace": null,
             "arg_name": "sub_Revenue"
           },
           {
+            "kind": "entity",
             "datatype": "string",
             "role": "sub_key",
             "namespace": "geo",
@@ -180,9 +191,10 @@
         "obj_args": [
           {
             "arg_name": "Obj",
-            "datatype": "Fact"
+            "datatype": "fact"
           },
           {
+            "kind": "entity",
             "datatype": "string",
             "role": "obj_key",
             "namespace": "geo",
@@ -193,98 +205,13 @@
       }
     },
     {
-      "name": "employment",
-      "arity": 5,
-      "schema_id": "b964b5a88a1f6df51f4f2b0ac3a8f6822f7862bde769a78abe3b7ceb76b6d8a0",
-      "description": "employment relation with attributes",
-      "kind": "rel",
-      "sub_schema_id": "947dcb81ad1ff55ae09ddff33b1a4cd7f259db9fd3a8b60f1be1186ee6ff2504",
-      "obj_schema_id": "9ee7711705be81cec696a4eff71c3b719af5dfe4eef30f94b603ec3fd99c19c3",
-      "endpoints": {
-        "sub_key_fields": [
-          "Name"
-        ],
-        "obj_key_fields": [
-          "Company",
-          "Country"
-        ]
-      },
-      "props": [
-        {
-          "datatype": "int",
-          "role": "key",
-          "namespace": "time",
-          "arg_name": "since"
-        },
-        {
-          "datatype": "string",
-          "role": null,
-          "namespace": "org",
-          "arg_name": "title"
-        }
-      ],
-      "derived_signature": {
-        "derived": true,
-        "sub_args": [
-          {
-            "arg_name": "Sub",
-            "datatype": "Fact"
-          },
-          {
-            "datatype": "string",
-            "role": "sub_key",
-            "namespace": "person",
-            "arg_name": "sub_Name"
-          }
-        ],
-        "obj_args": [
-          {
-            "arg_name": "Obj",
-            "datatype": "Fact"
-          },
-          {
-            "datatype": "string",
-            "role": "obj_key",
-            "namespace": "org",
-            "arg_name": "obj_Company"
-          },
-          {
-            "datatype": "float",
-            "role": "obj_attr",
-            "namespace": "org",
-            "arg_name": "obj_Revenue"
-          },
-          {
-            "datatype": "string",
-            "role": "obj_key",
-            "namespace": "geo",
-            "arg_name": "obj_Country"
-          }
-        ],
-        "prop_args": [
-          {
-            "datatype": "int",
-            "role": "prop",
-            "namespace": "time",
-            "arg_name": "since"
-          },
-          {
-            "datatype": "string",
-            "role": "prop",
-            "namespace": "org",
-            "arg_name": "title"
-          }
-        ]
-      }
-    },
-    {
       "name": "lives_in",
       "arity": 2,
-      "schema_id": "1427b55d4a682e02119670f5f64c8c481fc78e19a6a27822222b8f51901b2031",
+      "schema_id": "8f790e9d3c73558bcdde0d12b680c07b28d18cf2b56babe359232d4c9cb69e18",
       "description": "person lives in city",
       "kind": "rel",
-      "sub_schema_id": "947dcb81ad1ff55ae09ddff33b1a4cd7f259db9fd3a8b60f1be1186ee6ff2504",
-      "obj_schema_id": "76ce9a0f477f12a51b0eafa5246dc3ea5272433cc766695ca7a8b9f85c2a060a",
+      "sub_schema_id": "210754ae39d0e3597a6a0e68247435f54784620a6e83ab40d46d3f11b20c0595",
+      "obj_schema_id": "e90287e5fc11f7d5f016c2bd1feda96ac53e002ba7f67d4261f6aa3bb08d3f49",
       "endpoints": {
         "sub_key_fields": [
           "Name"
@@ -299,9 +226,10 @@
         "sub_args": [
           {
             "arg_name": "Sub",
-            "datatype": "Fact"
+            "datatype": "fact"
           },
           {
+            "kind": "entity",
             "datatype": "string",
             "role": "sub_key",
             "namespace": "person",
@@ -311,9 +239,10 @@
         "obj_args": [
           {
             "arg_name": "Obj",
-            "datatype": "Fact"
+            "datatype": "fact"
           },
           {
+            "kind": "entity",
             "datatype": "string",
             "role": "obj_key",
             "namespace": "geo",
@@ -326,11 +255,11 @@
     {
       "name": "located_in",
       "arity": 2,
-      "schema_id": "e2f5406bc5ac6cc9fa23c13c926ef11a376004279d3ba3471bdbac847fbdd9c3",
+      "schema_id": "687a25321e97052e6b5520d43166ae53f20da536aae4499278944cd85aaf3096",
       "description": "city located in country",
       "kind": "rel",
-      "sub_schema_id": "76ce9a0f477f12a51b0eafa5246dc3ea5272433cc766695ca7a8b9f85c2a060a",
-      "obj_schema_id": "0d7f321526421614cf75eb9cd18a2a7abfa8d1ca9cd3d19d327221903921fa8f",
+      "sub_schema_id": "e90287e5fc11f7d5f016c2bd1feda96ac53e002ba7f67d4261f6aa3bb08d3f49",
+      "obj_schema_id": "d27bbbdba88be1fc3b148800fe3718d1f90c403b7607bd2250703abbf8ea8430",
       "endpoints": {
         "sub_key_fields": [
           "City"
@@ -345,9 +274,10 @@
         "sub_args": [
           {
             "arg_name": "Sub",
-            "datatype": "Fact"
+            "datatype": "fact"
           },
           {
+            "kind": "entity",
             "datatype": "string",
             "role": "sub_key",
             "namespace": "geo",
@@ -357,9 +287,10 @@
         "obj_args": [
           {
             "arg_name": "Obj",
-            "datatype": "Fact"
+            "datatype": "fact"
           },
           {
+            "kind": "entity",
             "datatype": "string",
             "role": "obj_key",
             "namespace": "geo",
@@ -372,11 +303,11 @@
     {
       "name": "works_at",
       "arity": 5,
-      "schema_id": "a5f8858737e6269dd45bd5226251545913b643d22cdaa6df5babccdf8aaedae8",
-      "description": null,
+      "schema_id": "81db87c85325eefe059c356b81ef16b56e0e987114d12162346c5aa10fd4d8d5",
+      "description": "employment relation with attributes",
       "kind": "rel",
-      "sub_schema_id": "947dcb81ad1ff55ae09ddff33b1a4cd7f259db9fd3a8b60f1be1186ee6ff2504",
-      "obj_schema_id": "9ee7711705be81cec696a4eff71c3b719af5dfe4eef30f94b603ec3fd99c19c3",
+      "sub_schema_id": "210754ae39d0e3597a6a0e68247435f54784620a6e83ab40d46d3f11b20c0595",
+      "obj_schema_id": "9bbc9bce0d8470440a73ae16cccc3b7ff69c578217d92aed1ad76a7ca8258670",
       "endpoints": {
         "sub_key_fields": [
           "Name"
@@ -388,16 +319,18 @@
       },
       "props": [
         {
+          "kind": "value",
           "datatype": "int",
           "role": null,
           "namespace": null,
-          "arg_name": "since"
+          "arg_name": "Since"
         },
         {
+          "kind": "value",
           "datatype": "string",
           "role": null,
           "namespace": null,
-          "arg_name": "title"
+          "arg_name": "Title"
         }
       ],
       "derived_signature": {
@@ -405,9 +338,10 @@
         "sub_args": [
           {
             "arg_name": "Sub",
-            "datatype": "Fact"
+            "datatype": "fact"
           },
           {
+            "kind": "entity",
             "datatype": "string",
             "role": "sub_key",
             "namespace": "person",
@@ -417,21 +351,24 @@
         "obj_args": [
           {
             "arg_name": "Obj",
-            "datatype": "Fact"
+            "datatype": "fact"
           },
           {
+            "kind": "entity",
             "datatype": "string",
             "role": "obj_key",
-            "namespace": "org",
+            "namespace": null,
             "arg_name": "obj_Company"
           },
           {
+            "kind": "value",
             "datatype": "float",
             "role": "obj_attr",
-            "namespace": "org",
+            "namespace": null,
             "arg_name": "obj_Revenue"
           },
           {
+            "kind": "entity",
             "datatype": "string",
             "role": "obj_key",
             "namespace": "geo",
@@ -440,16 +377,18 @@
         ],
         "prop_args": [
           {
+            "kind": "value",
             "datatype": "int",
             "role": "prop",
             "namespace": null,
-            "arg_name": "since"
+            "arg_name": "Since"
           },
           {
+            "kind": "value",
             "datatype": "string",
             "role": "prop",
             "namespace": null,
-            "arg_name": "title"
+            "arg_name": "Title"
           }
         ]
       }

@@ -22,18 +22,18 @@ stored as the default filter; calling `query()` with no arguments will use that 
 
 ```python
 from pathlib import Path
-from symir.ir.fact_schema import ArgSpec, Fact, Rel, FactLayer
+from symir.ir.fact_schema import Entity, Value, Fact, Rel, FactLayer
 from symir.fact_store.provider import CSVProvider, CSVSource
 
 person = Fact(
     "person",
-    [ArgSpec("Name:string", role="key"), ArgSpec("address:string")],
+    [Entity("Name", "string"), Value("address", "string")],
 )
 city = Fact(
     "city",
-    [ArgSpec("Name:string", role="key"), ArgSpec("Country:string")],
+    [Entity("Name", "string"), Value("Country", "string")],
 )
-lives_in = Rel("lives_in", sub=person, obj=city, props=[ArgSpec("since:int")])
+lives_in = Rel("lives_in", sub=person, obj=city, props=[Value("since", "int")])
 
 schema = FactLayer([person, city, lives_in])
 sources = [
@@ -77,7 +77,7 @@ Runtime behavior summary:
 For rel schemas, mapping is strictly by `Rel.signature` order (not by header name):
 
 ```python
-lives_in = Rel("lives_in", sub=person, obj=city, props=[ArgSpec("since:int")])
+lives_in = Rel("lives_in", sub=person, obj=city, props=[Value("since", "int")])
 [arg.name for arg in lives_in.signature]
 # -> ["sub_Name", "obj_Name", "since"]
 ```

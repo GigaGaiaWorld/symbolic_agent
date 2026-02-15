@@ -3,7 +3,8 @@
 from __future__ import annotations
 
 from symir.ir.fact_schema import (
-    ArgSpec,
+    Entity,
+    Value,
     PredicateSchema,
     FactSchema,
     FactView,
@@ -37,7 +38,8 @@ from symir.mappers.renderers import (
 from symir.probability import ProbabilityConfig
 
 __all__ = [
-    "ArgSpec",
+    "Entity",
+    "Value",
     "PredicateSchema",
     "FactSchema",
     "FactView",

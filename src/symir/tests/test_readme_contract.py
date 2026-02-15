@@ -6,7 +6,7 @@ from symir.errors import ProviderError, SchemaError, ValidationError
 from symir.fact_store.provider import CSVProvider, CSVSource
 from symir.fact_store.rel_builder import RelBuilder, ROW_PROB_KEY
 from symir.ir.expr_ir import Const, Ref, Var, expr_from_dict
-from symir.ir.fact_schema import ArgSpec, Fact, FactLayer, Rel
+from symir.ir.fact_schema import Entity, Value, field_from_dict, Fact, FactLayer, Rel
 from symir.ir.instance import Instance
 from symir.ir.rule_schema import Cond, Rule
 from symir.rules.constraint_schemas import build_pydantic_rule_model, build_responses_schema
@@ -18,40 +18,43 @@ class TestReadmeContract(unittest.TestCase):
         person = Fact(
             "person",
             [
-                ArgSpec("Name:string", role="key"),
-                ArgSpec("Address:string"),
-                ArgSpec("Age:int"),
+                Entity("Name", "string"),
+                Value("Address", "string"),
+                Value("Age", "int"),
             ],
         )
         company = Fact(
             "company",
             [
-                ArgSpec("Company:string", role="key"),
-                ArgSpec("Worth:float"),
+                Entity("Company", "string"),
+                Value("Worth", "float"),
             ],
         )
         employment = Rel(
             "employment",
             sub=person,
             obj=company,
-            props=[ArgSpec("Since:int"), ArgSpec("Title:string")],
+            props=[Value("Since", "int"), Value("Title", "string")],
         )
         return FactLayer([person, company, employment]), person, company, employment
 
-    def test_argspec_and_schema_payload_contract(self) -> None:
-        city = ArgSpec("City:string", role="key")
+    def test_argument_and_schema_payload_contract(self) -> None:
+        city = Entity("City", "string")
         self.assertEqual(city.name, "City")
         self.assertEqual(city.datatype, "string")
 
         with self.assertRaises(SchemaError):
-            ArgSpec("Name:string", name="Other")
+            Value("Name", "string", role="key")
 
-        from_arg_name = ArgSpec.from_dict({"datatype": "string", "arg_name": "Name"})
+        from_arg_name = field_from_dict({"datatype": "string", "arg_name": "Name", "role": "key"})
         self.assertEqual(from_arg_name.name, "Name")
-        from_name = ArgSpec.from_dict({"datatype": "string", "name": "Name"})
+        self.assertEqual(from_arg_name.role, "key")
+        from_name = field_from_dict({"datatype": "string", "name": "Name"})
         self.assertEqual(from_name.name, "Name")
-        from_spec = ArgSpec.from_dict({"spec": "Country:string"})
-        self.assertEqual(from_spec.name, "Country")
+        with self.assertRaises(SchemaError):
+            field_from_dict({"spec": "Country:string"})  # type: ignore[arg-type]
+        with self.assertRaises(SchemaError):
+            Entity("Country", "json")  # type: ignore[arg-type]
 
         _, person, company, employment = self._basic_schema()
         self.assertEqual(employment.arity, len(employment.endpoints["sub_key_fields"]) + len(employment.endpoints["obj_key_fields"]) + len(employment.props))
@@ -69,6 +72,23 @@ class TestReadmeContract(unittest.TestCase):
         self.assertIn("key_fields", fact_payload)
         self.assertEqual(fact_payload["kind"], "fact")
         self.assertEqual(rel_payload["kind"], "rel")
+
+    def test_fact_and_rel_require_keys(self) -> None:
+        with self.assertRaisesRegex(SchemaError, "Fact requires at least one key field"):
+            Fact("person_no_key", [Value("Name", "string")])
+
+        person = Fact("person", [Entity("Name", "string")])
+        company = Fact("company", [Entity("Company", "string")])
+        with self.assertRaisesRegex(
+            SchemaError,
+            "Rel subject and object each require at least one key field",
+        ):
+            Rel(
+                "works_at_invalid",
+                sub=person,
+                obj=company,
+                endpoints={"sub_key_fields": [], "obj_key_fields": ["Company"]},
+            )
 
     def test_registry_and_view_contract(self) -> None:
         registry, person, company, employment = self._basic_schema()
@@ -143,19 +163,19 @@ class TestReadmeContract(unittest.TestCase):
 
         keep_person = Fact(
             "person_keep",
-            [ArgSpec("Name:string", role="key"), ArgSpec("Address:string")],
+            [Entity("Name", "string"), Value("Address", "string")],
             merge_policy="keep_all",
         )
         keep_company = Fact(
             "company_keep",
-            [ArgSpec("Company:string", role="key")],
+            [Entity("Company", "string")],
             merge_policy="keep_all",
         )
         keep_rel = Rel(
             "employment_keep",
             sub=keep_person,
             obj=keep_company,
-            props=[ArgSpec("Since:int")],
+            props=[Value("Since", "int")],
             merge_policy="keep_all",
         )
 
@@ -220,13 +240,13 @@ class TestReadmeContract(unittest.TestCase):
     def test_rel_builder_contract_and_errors(self) -> None:
         person = Fact(
             "person",
-            [ArgSpec("Name:string", role="key"), ArgSpec("Address:string", role="key")],
+            [Entity("Name", "string"), Entity("Address", "string")],
         )
         company = Fact(
             "company",
-            [ArgSpec("Company:string", role="key"), ArgSpec("Country:string", role="key")],
+            [Entity("Company", "string"), Entity("Country", "string")],
         )
-        works = Rel("works_at", sub=person, obj=company, props=[ArgSpec("Since:int")])
+        works = Rel("works_at", sub=person, obj=company, props=[Value("Since", "int")])
         registry = FactLayer([person, company, works])
 
         facts = [
@@ -270,8 +290,8 @@ class TestReadmeContract(unittest.TestCase):
         self.assertTrue(all(rel.props["Since"] == 2020 for rel in rels))
 
     def test_rule_ref_and_constraint_schema_contract(self) -> None:
-        person = Fact("person", [ArgSpec("Name:string"), ArgSpec("Age:int")])
-        head = Fact("resident", [ArgSpec("Name:string"), ArgSpec("Age:int")])
+        person = Fact("person", [Entity("Name", "string"), Value("Age", "int")])
+        head = Fact("resident", [Entity("Name", "string"), Value("Age", "int")])
         schema = FactLayer([person])
         view = schema.view([person])
 

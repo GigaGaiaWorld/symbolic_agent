@@ -31,64 +31,63 @@ pip install -e .
 - `Rel`: directed edge-like predicate, fixed `sub`/`obj` endpoints plus relation `props`.
 - Neo4j-oriented mapping convention: node label = `Fact.name`; `namespace` is a logical domain tag, not the node label.
 
-### ArgSpec Syntax
+### Entity/Value Syntax
 
 ```python
-from symir.ir.fact_schema import ArgSpec
+from symir.ir.fact_schema import Entity, Value
 
 # Constructor contract
-# ArgSpec(
-#     spec: str,
+# Entity(
+#     name: str | None,
+#     datatype: Literal["string", "int", "float", "bool", "atom", "symbol", "term", "number", "list", "tuple", "any", "fact"],
 #     namespace: str | None = None,
 #     role: str | None = None,
-#     name: str | None = None,
+# )
+#
+# Value(
+#     name: str | None,
+#     datatype: Literal["string", "int", "float", "bool", "atom", "symbol", "term", "number", "list", "tuple", "any", "fact"],
+#     namespace: str | None = None,
+#     role: str | None = None,
 # )
 
-# Sugar: "Name:type" -> name="Name", datatype="type"
-city_name = ArgSpec("City:string", namespace="geo", role="key")
-
-# Type-only form: "type" -> datatype="type", name auto-filled later
-age = ArgSpec("int", namespace="person")
-
-# Explicit override (equivalent to "Country:string")
-country = ArgSpec(spec="string", name="Country", namespace="geo")
+city_name = Entity("City", "string", namespace="geo")
+age = Value("Age", "int", namespace="person")
+country = Entity("Country", "string", namespace="geo")
 ```
 
 Rules:
 
-- `spec` supports `"Name:type"` and `"type"`.
-- When both `spec` and `name` provide a name, they must match.
-- `ArgSpec("Name:string", name="Other")` raises `SchemaError`.
+- `Entity` is always key-like (default role is `key`).
+- `Value` cannot use key-like roles (`key|id|name|sub_key|obj_key`).
+- `"Name:type"` / `"type"` sugar is not supported.
+- `datatype` must be one of the allowed `Literal` values.
 - `arg_name` (`name`) is auto-filled when missing.
-- key-like roles (`key|id|name`) default to `Name`; other roles default to `Param`.
 - duplicate auto names are suffixed (`Name2`, `Param2`, ...).
-- Internal field is `name`; compatibility accessor `arg_name` is still available.
-- `to_dict()` emits `arg_name`, not `name`.
+- internal field is `name`; compatibility accessor `arg_name` is still available.
+- `to_dict()` emits `kind` (`entity` / `value`) and `arg_name`.
 
-Serialization and compatibility:
+Serialization:
 
 ```python
-# New-style payload
-ArgSpec.from_dict({"datatype": "string", "arg_name": "Name", "role": "key"})
+from symir.ir.fact_schema import field_from_dict
 
-# Also accepted: `name` as alias for `arg_name`
-ArgSpec.from_dict({"datatype": "string", "name": "Name"})
-
-# Also accepted: `spec` as fallback when `datatype` is missing
-ArgSpec.from_dict({"spec": "Country:string", "namespace": "geo"})
+field_from_dict({"kind": "entity", "datatype": "string", "arg_name": "Name"})
+field_from_dict({"datatype": "string", "arg_name": "Name", "role": "key"})  # role-based inference
+field_from_dict({"kind": "value", "datatype": "int", "arg_name": "Age"})
 ```
 
 ### Define Facts and Relations
 
 ```python
-from symir.ir.fact_schema import ArgSpec, Fact, Rel, FactLayer
+from symir.ir.fact_schema import Entity, Value, Fact, Rel, FactLayer
 
 person = Fact(
     "person",
     [
-        ArgSpec("Name:string", namespace="person", role="key"),
-        ArgSpec("Address:string", namespace="address"),
-        ArgSpec("Age:int", namespace="person"),
+        Entity("Name", "string", namespace="person"),
+        Value("Address", "string", namespace="address"),
+        Value("Age", "int", namespace="person"),
     ],
     description="Person entity",
     merge_policy="latest",
@@ -97,8 +96,8 @@ person = Fact(
 company = Fact(
     "company",
     [
-        ArgSpec("Company:string", namespace="org", role="key"),
-        ArgSpec("Worth:float", namespace="org"),
+        Entity("Company", "string", namespace="org"),
+        Value("Worth", "float", namespace="org"),
     ],
     description="Company entity",
 )
@@ -108,8 +107,8 @@ employment = Rel(
     sub=person,
     obj=company,
     props=[
-        ArgSpec("Since:int", namespace="time"),
-        ArgSpec("Title:string", namespace="org"),
+        Value("Since", "int", namespace="time"),
+        Value("Title", "string", namespace="org"),
     ],
     description="person works at company",
     merge_policy="keep_all",
@@ -120,7 +119,9 @@ schema = FactLayer([person, company, employment])
 
 Design details:
 
-- `Fact.key_fields` are derived with fallback order: `key > id > name > pos0` (signature order preserved).
+- `Fact.key_fields` are derived with priority: `key > id > name`.
+- `Fact` must have at least one key field (either via `Entity` or explicit `key_fields`).
+- `Rel` requires at least one key field on both subject and object endpoints.
 - `Rel` inherits endpoint keys from `sub`/`obj` by default and builds relation signature as `sub_<key> + obj_<key> + props`.
 - `Rel.arity = len(sub_key_fields) + len(obj_key_fields) + len(props)`.
 - `schema_id` is stable hash over canonical schema fields.
@@ -147,9 +148,9 @@ For `Rel`, object references are frozen to `sub_schema_id` / `obj_schema_id`.
   "kind": "fact",
   "merge_policy": "latest",
   "signature": [
-    {"datatype": "string", "role": "key", "namespace": "person", "arg_name": "Name"},
-    {"datatype": "string", "role": null, "namespace": "address", "arg_name": "Address"},
-    {"datatype": "int", "role": null, "namespace": "person", "arg_name": "Age"}
+    {"kind": "entity", "datatype": "string", "role": "key", "namespace": "person", "arg_name": "Name"},
+    {"kind": "value", "datatype": "string", "role": null, "namespace": "address", "arg_name": "Address"},
+    {"kind": "value", "datatype": "int", "role": null, "namespace": "person", "arg_name": "Age"}
   ],
   "key_fields": ["Name"]
 }
@@ -172,25 +173,25 @@ For `Rel`, object references are frozen to `sub_schema_id` / `obj_schema_id`.
     "obj_key_fields": ["Company"]
   },
   "props": [
-    {"datatype": "int", "role": null, "namespace": "time", "arg_name": "Since"},
-    {"datatype": "string", "role": null, "namespace": "org", "arg_name": "Title"}
+    {"kind": "value", "datatype": "int", "role": null, "namespace": "time", "arg_name": "Since"},
+    {"kind": "value", "datatype": "string", "role": null, "namespace": "org", "arg_name": "Title"}
   ],
   "derived_signature": {
     "derived": true,
     "sub_args": [
-      {"arg_name": "Sub", "datatype": "Fact"},
-      {"datatype": "string", "role": "sub_key", "namespace": "person", "arg_name": "sub_Name"},
-      {"datatype": "string", "role": "sub_attr", "namespace": "address", "arg_name": "sub_Address"},
-      {"datatype": "int", "role": "sub_attr", "namespace": "person", "arg_name": "sub_Age"}
+      {"arg_name": "Sub", "datatype": "fact"},
+      {"kind": "entity", "datatype": "string", "role": "sub_key", "namespace": "person", "arg_name": "sub_Name"},
+      {"kind": "value", "datatype": "string", "role": "sub_attr", "namespace": "address", "arg_name": "sub_Address"},
+      {"kind": "value", "datatype": "int", "role": "sub_attr", "namespace": "person", "arg_name": "sub_Age"}
     ],
     "obj_args": [
-      {"arg_name": "Obj", "datatype": "Fact"},
-      {"datatype": "string", "role": "obj_key", "namespace": "org", "arg_name": "obj_Company"},
-      {"datatype": "float", "role": "obj_attr", "namespace": "org", "arg_name": "obj_Worth"}
+      {"arg_name": "Obj", "datatype": "fact"},
+      {"kind": "entity", "datatype": "string", "role": "obj_key", "namespace": "org", "arg_name": "obj_Company"},
+      {"kind": "value", "datatype": "float", "role": "obj_attr", "namespace": "org", "arg_name": "obj_Worth"}
     ],
     "prop_args": [
-      {"datatype": "int", "role": "prop", "namespace": "time", "arg_name": "Since"},
-      {"datatype": "string", "role": "prop", "namespace": "org", "arg_name": "Title"}
+      {"kind": "value", "datatype": "int", "role": "prop", "namespace": "time", "arg_name": "Since"},
+      {"kind": "value", "datatype": "string", "role": "prop", "namespace": "org", "arg_name": "Title"}
     ]
   }
 }
@@ -215,7 +216,7 @@ Case A: persisted full `FactLayer` payload (recommended):
 
 ```python
 import json
-from symir.ir.fact_schema import FactLayer, ArgSpec, Rel
+from symir.ir.fact_schema import FactLayer, Value, Rel
 
 payload = json.load(open("schema.json", "r", encoding="utf-8"))
 registry = FactLayer.from_dict(payload)
@@ -227,7 +228,7 @@ works_at = Rel(
     "works_at",
     sub=person,
     obj=company,
-    props=[ArgSpec("Since:int"), ArgSpec("Title:string")],
+    props=[Value("Since", "int"), Value("Title", "string")],
 )
 
 registry = FactLayer([*registry.predicates(), works_at])
@@ -237,7 +238,7 @@ Case B: only persisted fact predicate dicts:
 
 ```python
 import json
-from symir.ir.fact_schema import PredicateSchema, FactLayer, ArgSpec, Rel
+from symir.ir.fact_schema import PredicateSchema, FactLayer, Value, Rel
 
 items = json.load(open("facts_only.json", "r", encoding="utf-8"))
 fact_preds = [
@@ -247,19 +248,19 @@ fact_preds = [
 ]
 
 registry = FactLayer(fact_preds)
-works_at = Rel("works_at", sub=registry.fact("person"), obj=registry.fact("company"), props=[ArgSpec("Since:int")])
+works_at = Rel("works_at", sub=registry.fact("person"), obj=registry.fact("company"), props=[Value("Since", "int")])
 registry = FactLayer([*registry.predicates(), works_at])
 ```
 
 Case C: load cached predicate schemas and build new rel:
 
 ```python
-from symir.ir.fact_schema import load_predicate_schemas_from_cache, FactLayer, ArgSpec, Rel
+from symir.ir.fact_schema import load_predicate_schemas_from_cache, FactLayer, Value, Rel
 
 cached = [pred for pred in load_predicate_schemas_from_cache() if pred.kind == "fact"]
 registry = FactLayer(cached)
 
-works_at = Rel("works_at", sub=registry.fact("person"), obj=registry.fact("company"), props=[ArgSpec("Since:int")])
+works_at = Rel("works_at", sub=registry.fact("person"), obj=registry.fact("company"), props=[Value("Since", "int")])
 registry = FactLayer([*registry.predicates(), works_at])
 ```
 
@@ -332,11 +333,15 @@ Draft example (LLM output):
 Draft-to-registry conversion:
 
 ```python
-from symir.ir.fact_schema import ArgSpec, Fact, Rel, FactLayer
+from symir.ir.fact_schema import Entity, Value, field_from_dict, Fact, Rel, FactLayer
 
 def load_llm_draft(draft: dict) -> FactLayer:
     def parse_args(raw):
-        return [ArgSpec.from_dict(item) for item in raw]
+        parsed = []
+        for item in raw:
+            field = field_from_dict(item)
+            parsed.append(field)
+        return parsed
 
     facts = []
     by_name = {}
@@ -581,14 +586,14 @@ rel_f = Instance(schema=employment, terms=[alice_ref, openai_ref, 2020, "researc
 Endpoint key completeness example (composite keys):
 
 ```python
-from symir.ir.fact_schema import ArgSpec, Fact, Rel
+from symir.ir.fact_schema import Entity, Value, Fact, Rel
 
 person2 = Fact(
     "person2",
-    [ArgSpec("Name:string", role="key"), ArgSpec("Address:string", role="key")],
+    [Entity("Name", "string"), Entity("Address", "string")],
 )
-company2 = Fact("company2", [ArgSpec("Company:string", role="key")])
-employment2 = Rel("employment2", sub=person2, obj=company2, props=[ArgSpec("Since:int")])
+company2 = Fact("company2", [Entity("Company", "string")])
+employment2 = Rel("employment2", sub=person2, obj=company2, props=[Value("Since", "int")])
 
 # OK: both Name and Address are provided for sub endpoint.
 ok = Instance(
@@ -802,10 +807,10 @@ Notes:
 Rel CSV mapping details (important):
 
 ```python
-from symir.ir.fact_schema import ArgSpec, Fact, Rel
+from symir.ir.fact_schema import Entity, Value, Fact, Rel
 
-person = Fact("person", [ArgSpec("Name:string", role="key")])
-company = Fact("company", [ArgSpec("Company:string", role="key")])
+person = Fact("person", [Entity("Name", "string")])
+company = Fact("company", [Entity("Company", "string")])
 works = Rel("works_at", sub=person, obj=company)  # no props
 
 [arg.name for arg in works.signature]
@@ -827,16 +832,16 @@ Composite endpoint key example:
 person = Fact(
     "person",
     [
-        ArgSpec("Name:string", role="key"),
-        ArgSpec("Address:string", role="key"),
+        Entity("Name", "string"),
+        Entity("Address", "string"),
     ],
 )
-company = Fact("company", [ArgSpec("Company:string", role="key")])
+company = Fact("company", [Entity("Company", "string")])
 employment = Rel(
     "employment",
     sub=person,
     obj=company,
-    props=[ArgSpec("Since:int")],
+    props=[Value("Since", "int")],
 )
 
 [arg.name for arg in employment.signature]
@@ -856,7 +861,7 @@ employment = Rel(
     "employment",
     sub=person,
     obj=company,
-    props=[ArgSpec("Since:int")],
+    props=[Value("Since", "int")],
     endpoints={"sub_key_fields": ["Name", "Address"], "obj_key_fields": ["Company"]},
 )
 ```
@@ -1005,7 +1010,7 @@ Core syntax:
 
 ```python
 from symir.rule_ir import (
-    ArgSpec, Fact, Rel, FactLayer,
+    Entity, Value, Fact, Rel, FactLayer,
     Var, Const, Ref, Expr, Cond, Rule,
     Call, Unify, If,
 )
@@ -1040,8 +1045,8 @@ Ref(schema=alice)  # equivalent to terms=[Const("alice"), Const(30)]
 Fact-head example:
 
 ```python
-person = Fact("person", [ArgSpec("X:string")])
-head = Fact("resident", [ArgSpec("X:string")])
+person = Fact("person", [Entity("X", "string")])
+head = Fact("resident", [Entity("X", "string")])
 
 cond = Cond(
     literals=[Ref(schema=person, terms=[Var("X")])],
@@ -1054,18 +1059,18 @@ Rel-head example:
 
 ```python
 from symir.rule_ir import (
-    ArgSpec, Fact, Rel, FactLayer, Var, Const, Ref, Expr, Cond, Rule,
+    Entity, Value, Fact, Rel, FactLayer, Var, Const, Ref, Expr, Cond, Rule,
     Call, Unify,
     ProbLogRenderer, RenderContext
 )
 
-person = Fact("person", [ArgSpec("Name:string"), ArgSpec("Addr:string")])
-company = Fact("company", [ArgSpec("Company:string")])
+person = Fact("person", [Entity("Name", "string"), Value("Addr", "string")])
+company = Fact("company", [Entity("Company", "string")])
 employment = Rel(
     "employment",
     sub=person,
     obj=company,
-    props=[ArgSpec("Since:int"), ArgSpec("Title:string")],
+    props=[Value("Since", "int"), Value("Title", "string")],
 )
 factlayer = FactLayer([person, company, employment])
 
@@ -1140,9 +1145,9 @@ cond = Cond(
 Design/validation notes:
 
 - head argument variables come from `predicate.signature` arg names.
-- for stable rendering, define head arg names explicitly (for example `ArgSpec("X:string")`).
+- for stable rendering, define head arg names explicitly (for example `Entity("X", "string")`).
 - `Ref(...)` enforces arity against schema.
-- `Const(...)` is type-checked against referenced `ArgSpec.datatype`.
+- `Const(...)` is type-checked against referenced `Entity/Value.datatype`.
 - variable cross-literal type unification is currently not enforced globally.
 - for rel-head rendering, default mode is `rel_mode="none"`:
   - head is composed: `[Sub, Obj, <props...>]`,
@@ -1287,7 +1292,7 @@ Validation happens in three layers:
 Construction-time type checks (`Var` / `Const` have no datatype field):
 
 ```python
-person = Fact("person", [ArgSpec("Name:string"), ArgSpec("Age:int")])
+person = Fact("person", [Entity("Name", "string"), Value("Age", "int")])
 
 Ref(schema=person, terms=[Var("Name"), Const(30)])      # OK
 Ref(schema=person, terms=[Var("Name"), Const("thirty")])  # raises SchemaError
@@ -1326,7 +1331,7 @@ Legacy payload compatibility:
 
 ```python
 from symir.rule_ir import (
-    ArgSpec, Fact, Rel, FactLayer, FactView,
+    Entity, Value, Fact, Rel, FactLayer, FactView,
     Var, Const, Call, Unify, If, NotExpr, ExprIR,
     Ref, Expr, Cond, Rule, Query,
     FilterAST, PredMatch, And, Or, Not, filter_from_dict,

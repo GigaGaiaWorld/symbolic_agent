@@ -1,7 +1,7 @@
 import json
 import unittest
 
-from symir.ir.fact_schema import ArgSpec, PredicateSchema, FactSchema, Fact, Rel
+from symir.ir.fact_schema import Entity, Value, PredicateSchema, FactSchema, Fact, Rel
 from symir.rules.library import Library, LibrarySpec
 from symir.rules.constraint_schemas import (
     build_pydantic_rule_model,
@@ -14,7 +14,7 @@ class TestRuleSchemaGen(unittest.TestCase):
         parent = PredicateSchema(
             name="Parent",
             arity=2,
-            signature=[ArgSpec(spec="string"), ArgSpec(spec="string")],
+            signature=[Value("Param", "string"), Value("Param2", "string")],
         )
         schema = FactSchema([parent])
         view = schema.view([parent])
@@ -51,17 +51,17 @@ class TestRuleSchemaGen(unittest.TestCase):
     def test_prompt_block_catalog(self) -> None:
         person = Fact(
             "person",
-            [ArgSpec("Name:string", role="key"), ArgSpec("Address:string")],
+            [Entity("Name", "string"), Value("Address", "string")],
         )
         company = Fact(
             "company",
-            [ArgSpec("Company:string", role="key"), ArgSpec("Country:string", role="key")],
+            [Entity("Company", "string"), Entity("Country", "string")],
         )
         employment = Rel(
             "employment",
             sub=person,
             obj=company,
-            props=[ArgSpec("since:int"), ArgSpec("title:string")],
+            props=[Value("since", "int"), Value("title", "string")],
         )
         schema = FactSchema([person, company, employment])
         view = schema.view([person, company, employment])
@@ -92,16 +92,16 @@ class TestRuleSchemaGen(unittest.TestCase):
         self.assertIn("Ref literal syntax (compact mode)", catalog["head"])
 
     def test_compact_arity_error_includes_predicate_context(self) -> None:
-        person = Fact("person", [ArgSpec("Name:string", role="key")])
+        person = Fact("person", [Entity("Name", "string")])
         company = Fact(
             "company",
-            [ArgSpec("Company:string", role="key"), ArgSpec("Country:string", role="key")],
+            [Entity("Company", "string"), Entity("Country", "string")],
         )
         employment = Rel(
             "employment",
             sub=person,
             obj=company,
-            props=[ArgSpec("since:int"), ArgSpec("title:string")],
+            props=[Value("since", "int"), Value("title", "string")],
         )
         schema = FactSchema([person, company, employment])
         view = schema.view([employment])
@@ -134,8 +134,8 @@ class TestRuleSchemaGen(unittest.TestCase):
         self.assertIn("Compact mode requires all args", text)
 
     def test_compact_allows_freeform_arg_names(self) -> None:
-        person = Fact("person", [ArgSpec("Name:string", role="key")])
-        city = Fact("city", [ArgSpec("City:string", role="key")])
+        person = Fact("person", [Entity("Name", "string")])
+        city = Fact("city", [Entity("City", "string")])
         lives = Rel("lives_in", sub=person, obj=city)
         schema = FactSchema([person, city, lives])
         view = schema.view([lives])
@@ -163,8 +163,8 @@ class TestRuleSchemaGen(unittest.TestCase):
         self.assertEqual(len(validated.conditions), 1)
 
     def test_prompt_block_rel_mode_selection(self) -> None:
-        person = Fact("person", [ArgSpec("Name:string", role="key")], description="person node")
-        city = Fact("city", [ArgSpec("City:string", role="key")], description="city node")
+        person = Fact("person", [Entity("Name", "string")], description="person node")
+        city = Fact("city", [Entity("City", "string")], description="city node")
         lives = Rel("lives_in", sub=person, obj=city)
         schema = FactSchema([person, city, lives])
         view = schema.view([lives])
@@ -180,16 +180,16 @@ class TestRuleSchemaGen(unittest.TestCase):
         self.assertNotIn("rel_mode=flattened", block)
 
     def test_compact_response_schema_enforces_ref_arity(self) -> None:
-        person = Fact("person", [ArgSpec("Name:string", role="key")])
+        person = Fact("person", [Entity("Name", "string")])
         company = Fact(
             "company",
-            [ArgSpec("Company:string", role="key"), ArgSpec("Country:string", role="key")],
+            [Entity("Company", "string"), Entity("Country", "string")],
         )
         works = Rel(
             "works_at",
             sub=person,
             obj=company,
-            props=[ArgSpec("since:int"), ArgSpec("title:string")],
+            props=[Value("since", "int"), Value("title", "string")],
         )
         schema = FactSchema([person, company, works])
         view = schema.view([works])

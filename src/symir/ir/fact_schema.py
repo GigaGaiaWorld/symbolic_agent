@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Optional, Iterable, Literal
+from typing import Optional, Iterable, Literal, TypeAlias, get_args
 import hashlib
 import json
 import os
@@ -22,6 +22,22 @@ _DEFAULT_KEY_NAME = "Name"
 _DEFAULT_PARAM_NAME = "Param"
 _SCHEMA_VERSION = 1
 _ALLOWED_MERGE_POLICIES = {"max", "latest", "noisy_or", "overwrite", "keep_all"}
+_ENTITY_ROLES = {"key", "id", "name", "sub_key", "obj_key"}
+DatalogDatatype: TypeAlias = Literal[
+    "string",
+    "int",
+    "float",
+    "bool",
+    "atom",
+    "symbol",
+    "term",
+    "number",
+    "list",
+    "tuple",
+    "any",
+    "fact",
+]
+_ALLOWED_DATATYPES = set(get_args(DatalogDatatype))
 
 
 def _canonical_json(payload: dict[str, object]) -> str:
@@ -60,52 +76,67 @@ def load_predicate_schemas_from_cache() -> list["PredicateSchema"]:
             items = [cache[key] for key in cache]
     finally:
         cache.close()
-    return [PredicateSchema.from_dict(item) for item in items]
+    loaded: list[PredicateSchema] = []
+    for item in items:
+        if not isinstance(item, dict):
+            continue
+        try:
+            loaded.append(PredicateSchema.from_dict(item))
+        except SchemaError:
+            continue
+    return loaded
+
+
+def _normalize_datatype(datatype: object) -> str:
+    if not isinstance(datatype, str) or not datatype.strip():
+        raise SchemaError("Argument datatype must be a non-empty string.")
+    normalized = datatype.strip()
+    if normalized not in _ALLOWED_DATATYPES:
+        raise SchemaError(
+            f"Unsupported datatype '{normalized}'. Allowed: {sorted(_ALLOWED_DATATYPES)}."
+        )
+    return normalized
+
+
+def _normalize_name(name: object, *, label: str) -> Optional[str]:
+    if name is None:
+        return None
+    if not isinstance(name, str) or not name.strip():
+        raise SchemaError(f"{label} must be a non-empty string.")
+    return name.strip()
 
 
 @dataclass(frozen=True, init=False)
-class ArgSpec:
-    """Argument specification for predicate signatures."""
+class Entity:
+    """Entity argument in predicate signatures. Always treated as key-like."""
 
+    name: Optional[str]
     datatype: str
-    role: Optional[str] = None
     namespace: Optional[str] = None
-    name: Optional[str] = None
+    role: str = "key"
 
     def __init__(
         self,
-        spec: str,
+        name: str | None,
+        datatype: DatalogDatatype,
         namespace: Optional[str] = None,
         role: Optional[str] = None,
-        name: Optional[str] = None,
     ) -> None:
-        if not isinstance(spec, str) or not spec.strip():
-            raise SchemaError("ArgSpec spec must be a non-empty string.")
-        spec = spec.strip()
-        spec_name: Optional[str] = None
-        spec_dtype = spec
-        if ":" in spec:
-            name_part, dtype_part = (part.strip() for part in spec.split(":", 1))
-            if not name_part or not dtype_part:
-                raise SchemaError("ArgSpec spec must be 'Name:type' or 'type'.")
-            spec_name = name_part
-            spec_dtype = dtype_part
-        if not isinstance(spec_dtype, str) or not spec_dtype.strip():
-            raise SchemaError("ArgSpec datatype must be a non-empty string.")
-        if name is not None:
-            if not isinstance(name, str) or not name.strip():
-                raise SchemaError("ArgSpec name must be a non-empty string.")
-            name = name.strip()
-        if spec_name and name and spec_name != name:
-            raise SchemaError("ArgSpec name conflicts with spec prefix.")
-        final_name = name or spec_name
-        object.__setattr__(self, "datatype", spec_dtype)
-        object.__setattr__(self, "role", role)
+        normalized_name = _normalize_name(name, label="Entity name")
+        normalized_datatype = _normalize_datatype(datatype)
+        normalized_role = role or "key"
+        if normalized_role not in _ENTITY_ROLES:
+            raise SchemaError(
+                f"Entity role must be one of {sorted(_ENTITY_ROLES)}. Got: {normalized_role}"
+            )
+        object.__setattr__(self, "name", normalized_name)
+        object.__setattr__(self, "datatype", normalized_datatype)
         object.__setattr__(self, "namespace", namespace)
-        object.__setattr__(self, "name", final_name)
+        object.__setattr__(self, "role", normalized_role)
 
     def to_dict(self) -> dict[str, object]:
         return {
+            "kind": "entity",
             "datatype": self.datatype,
             "role": self.role,
             "namespace": self.namespace,
@@ -113,21 +144,17 @@ class ArgSpec:
         }
 
     @staticmethod
-    def from_dict(data: dict[str, object]) -> "ArgSpec":
+    def from_dict(data: dict[str, object]) -> "Entity":
         if "datatype" not in data:
-            if "spec" in data:
-                data = dict(data)
-                data["datatype"] = data.get("spec")
-            else:
-                raise SchemaError("ArgSpec requires datatype.")
+            raise SchemaError("Entity requires datatype.")
         name = data.get("name")
         if name is None:
             name = data.get("arg_name")
-        return ArgSpec(
-            spec=str(data["datatype"]),
+        return Entity(
+            name=name if name is not None else None,
+            datatype=str(data["datatype"]),
             role=data.get("role") if data.get("role") is not None else None,
             namespace=data.get("namespace") if data.get("namespace") is not None else None,
-            name=name if name is not None else None,
         )
 
     @property
@@ -135,7 +162,77 @@ class ArgSpec:
         return self.name
 
 
-def _order_fields_by_signature(signature: list[ArgSpec], field_names: list[str]) -> list[str]:
+@dataclass(frozen=True, init=False)
+class Value:
+    """Value argument in predicate signatures."""
+
+    name: Optional[str]
+    datatype: str
+    namespace: Optional[str] = None
+    role: Optional[str] = None
+
+    def __init__(
+        self,
+        name: str | None,
+        datatype: DatalogDatatype,
+        namespace: Optional[str] = None,
+        role: Optional[str] = None,
+    ) -> None:
+        normalized_name = _normalize_name(name, label="Value name")
+        normalized_datatype = _normalize_datatype(datatype)
+        if role is not None and role in _ENTITY_ROLES:
+            raise SchemaError("Value role cannot be key-like; use Entity instead.")
+        object.__setattr__(self, "name", normalized_name)
+        object.__setattr__(self, "datatype", normalized_datatype)
+        object.__setattr__(self, "namespace", namespace)
+        object.__setattr__(self, "role", role)
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "kind": "value",
+            "datatype": self.datatype,
+            "role": self.role,
+            "namespace": self.namespace,
+            "arg_name": self.name,
+        }
+
+    @staticmethod
+    def from_dict(data: dict[str, object]) -> "Value":
+        if "datatype" not in data:
+            raise SchemaError("Value requires datatype.")
+        name = data.get("name")
+        if name is None:
+            name = data.get("arg_name")
+        return Value(
+            name=name if name is not None else None,
+            datatype=str(data["datatype"]),
+            role=data.get("role") if data.get("role") is not None else None,
+            namespace=data.get("namespace") if data.get("namespace") is not None else None,
+        )
+
+    @property
+    def arg_name(self) -> Optional[str]:
+        return self.name
+
+
+ArgField: TypeAlias = Entity | Value
+
+
+def field_from_dict(data: dict[str, object]) -> ArgField:
+    kind = data.get("kind")
+    role = data.get("role")
+    if kind is not None:
+        if kind == "entity":
+            return Entity.from_dict(data)
+        if kind == "value":
+            return Value.from_dict(data)
+        raise SchemaError("Argument kind must be either 'entity' or 'value'.")
+    if role in _ENTITY_ROLES:
+        return Entity.from_dict(data)
+    return Value.from_dict(data)
+
+
+def _order_fields_by_signature(signature: list[ArgField], field_names: list[str]) -> list[str]:
     if not isinstance(field_names, list) or not field_names:
         return []
     normalized = []
@@ -153,13 +250,11 @@ def _order_fields_by_signature(signature: list[ArgSpec], field_names: list[str])
     return normalized
 
 
-def _derive_key_field_names(signature: list[ArgSpec]) -> list[str]:
+def _derive_key_field_names(signature: list[ArgField]) -> list[str]:
     for role in _KEY_ROLE_ORDER:
         names = [arg.name for arg in signature if arg.role == role]
         if names:
             return names
-    if signature:
-        return [signature[0].name]
     return []
 
 
@@ -183,12 +278,12 @@ class PredicateSchema:
 
     name: str
     arity: int
-    signature: list[ArgSpec]
+    signature: list[ArgField]
     description: str | None = None
     kind: str = "fact"
     sub_schema_id: str | None = None
     obj_schema_id: str | None = None
-    props: list[ArgSpec] | None = None
+    props: list[Value] | None = None
     key_fields: list[str] | None = None
     endpoints: dict[str, list[str]] | None = None
     merge_policy: Literal["max", "latest", "noisy_or", "overwrite", "keep_all"] | None = None
@@ -216,8 +311,8 @@ class PredicateSchema:
         object.__setattr__(self, "signature", normalized_signature)
         if self.props is not None:
             if not isinstance(self.props, list):
-                raise SchemaError("Predicate props must be a list of ArgSpec.")
-            normalized_props = self._normalize_signature(self.props)
+                raise SchemaError("Predicate props must be a list of Value.")
+            normalized_props = self._normalize_signature(self.props, allow_entity=False)
             object.__setattr__(self, "props", normalized_props)
         elif self.kind == "rel":
             object.__setattr__(self, "props", [])
@@ -230,6 +325,8 @@ class PredicateSchema:
                 if not isinstance(key_fields, list):
                     raise SchemaError("key_fields must be a list of strings.")
                 key_fields = _order_fields_by_signature(normalized_signature, key_fields)
+            if type(self).__name__ == "Fact" and not key_fields:
+                raise SchemaError("Fact requires at least one key field.")
             object.__setattr__(self, "key_fields", key_fields)
             object.__setattr__(self, "endpoints", None)
         else:
@@ -242,6 +339,10 @@ class PredicateSchema:
             for key in sub_keys + obj_keys:
                 if not isinstance(key, str) or not key.strip():
                     raise SchemaError("Rel endpoint key fields must be non-empty strings.")
+            if not sub_keys or not obj_keys:
+                raise SchemaError(
+                    "Rel subject and object each require at least one key field."
+                )
             object.__setattr__(
                 self,
                 "endpoints",
@@ -251,13 +352,23 @@ class PredicateSchema:
         cache_predicate_schema(self)
 
     @staticmethod
-    def _normalize_signature(signature: list[ArgSpec], used: Optional[set[str]] = None) -> list[ArgSpec]:
+    def _normalize_signature(
+        signature: list[ArgField],
+        used: Optional[set[str]] = None,
+        *,
+        allow_entity: bool = True,
+    ) -> list[ArgField]:
         used_names = set(used) if used is not None else set()
-        normalized: list[ArgSpec] = []
+        normalized: list[ArgField] = []
         for arg in signature:
+            if not isinstance(arg, (Entity, Value)):
+                raise SchemaError("Predicate signature entries must be Entity or Value.")
+            if isinstance(arg, Entity) and not allow_entity:
+                raise SchemaError("Rel props cannot use Entity; use Value instead.")
             arg_name = arg.name
             if arg_name is None:
-                base = _DEFAULT_KEY_NAME if arg.role in _KEY_ROLE_ORDER else _DEFAULT_PARAM_NAME
+                key_like = isinstance(arg, Entity) or arg.role in _KEY_ROLE_ORDER
+                base = _DEFAULT_KEY_NAME if key_like else _DEFAULT_PARAM_NAME
                 candidate = base
                 if candidate in used_names:
                     suffix = 2
@@ -267,19 +378,29 @@ class PredicateSchema:
                 arg_name = candidate
             else:
                 if not isinstance(arg_name, str) or not arg_name.strip():
-                    raise SchemaError("ArgSpec name must be a non-empty string.")
+                    raise SchemaError("Argument name must be a non-empty string.")
                 arg_name = arg_name.strip()
                 if arg_name in used_names:
-                    raise SchemaError(f"Duplicate ArgSpec name: {arg_name}")
+                    raise SchemaError(f"Duplicate argument name: {arg_name}")
             used_names.add(arg_name)
-            normalized.append(
-                ArgSpec(
-                    spec=arg.datatype,
-                    role=arg.role,
-                    namespace=arg.namespace,
-                    name=arg_name,
+            if isinstance(arg, Entity):
+                normalized.append(
+                    Entity(
+                        name=arg_name,
+                        datatype=arg.datatype,
+                        role=arg.role,
+                        namespace=arg.namespace,
+                    )
                 )
-            )
+            else:
+                normalized.append(
+                    Value(
+                        name=arg_name,
+                        datatype=arg.datatype,
+                        role=arg.role,
+                        namespace=arg.namespace,
+                    )
+                )
         return normalized
 
     def build_instance_ref(self, terms: list[object]) -> InstanceRef:
@@ -298,7 +419,7 @@ class PredicateSchema:
         for idx, arg in index_map.items():
             if arg.name in key_names:
                 key_values[arg.name or str(idx)] = terms[idx]
-        return InstanceRef(schema=self.schema_id, key_values=key_values)
+        return InstanceRef(schema_id=self.schema_id, key_values=key_values)
 
     @property
     def schema_id(self) -> str:
@@ -342,8 +463,8 @@ class PredicateSchema:
             data["props"] = [p.to_dict() for p in (self.props or [])]
             derived = getattr(self, "_derived_signature", None)
             if derived is None:
-                sub_args = [{"arg_name": "Sub", "datatype": "Fact"}]
-                obj_args = [{"arg_name": "Obj", "datatype": "Fact"}]
+                sub_args = [{"arg_name": "Sub", "datatype": "fact"}]
+                obj_args = [{"arg_name": "Obj", "datatype": "fact"}]
                 prop_args = []
                 for spec in self.signature:
                     if spec.role == "sub_key":
@@ -380,7 +501,9 @@ class PredicateSchema:
                 def _include_item(item: object) -> bool:
                     if not isinstance(item, dict):
                         return False
-                    if item.get("arg_name") in {"Sub", "Obj"} and item.get("datatype") == "Fact":
+                    item_datatype = item.get("datatype")
+                    normalized_datatype = str(item_datatype).lower() if item_datatype is not None else None
+                    if item.get("arg_name") in {"Sub", "Obj"} and normalized_datatype == "fact":
                         return False
                     role = item.get("role")
                     if role is None:
@@ -398,13 +521,25 @@ class PredicateSchema:
         if props_data is not None:
             if not isinstance(props_data, list):
                 raise SchemaError("Predicate props must be a list.")
-            props = [ArgSpec.from_dict(item) for item in props_data]
+            props = []
+            for item in props_data:
+                if not isinstance(item, dict):
+                    raise SchemaError("Predicate props entries must be dicts.")
+                spec = field_from_dict(item)
+                if isinstance(spec, Entity):
+                    raise SchemaError("Predicate props must use Value, not Entity.")
+                props.append(spec)
         key_fields = data.get("key_fields")
         endpoints = data.get("endpoints")
+        signature: list[ArgField] = []
+        for item in signature_data:
+            if not isinstance(item, dict):
+                raise SchemaError("Predicate signature entries must be dicts.")
+            signature.append(field_from_dict(item))
         return PredicateSchema(
             name=str(data["name"]),
             arity=int(arity),
-            signature=[ArgSpec.from_dict(item) for item in signature_data],
+            signature=signature,
             description=data.get("description"),
             kind=kind,
             sub_schema_id=data.get("sub_schema_id"),
@@ -423,7 +558,7 @@ class Fact(PredicateSchema):
     def __init__(
         self,
         name: str,
-        args: list[ArgSpec],
+        args: list[ArgField],
         description: str | None = None,
         key_fields: list[str] | None = None,
         merge_policy: Literal["max", "latest", "noisy_or", "overwrite", "keep_all"] | None = None,
@@ -443,14 +578,14 @@ class Fact(PredicateSchema):
 class Rel(PredicateSchema):
     """Predicate schema for relations between facts."""
 
-    props: list[ArgSpec] = field(default_factory=list)
+    props: list[Value] = field(default_factory=list)
 
     def __init__(
         self,
         name: str,
         sub: Fact,
         obj: Fact,
-        props: list[ArgSpec] | None = None,
+        props: list[Value] | None = None,
         description: str | None = None,
         endpoints: dict[str, list[str]] | None = None,
         merge_policy: Literal["max", "latest", "noisy_or", "overwrite", "keep_all"] | None = None,
@@ -474,11 +609,11 @@ class Rel(PredicateSchema):
         for key_name in sub_key_fields:
             arg = sub_by_name[key_name]
             sub_signature.append(
-                ArgSpec(
-                    spec=arg.datatype,
+                Entity(
+                    name=f"sub_{arg.name}",
+                    datatype=arg.datatype,
                     role="sub_key",
                     namespace=arg.namespace,
-                    name=f"sub_{arg.name}",
                 )
             )
         obj_signature = []
@@ -486,23 +621,32 @@ class Rel(PredicateSchema):
         for key_name in obj_key_fields:
             arg = obj_by_name[key_name]
             obj_signature.append(
-                ArgSpec(
-                    spec=arg.datatype,
+                Entity(
+                    name=f"obj_{arg.name}",
+                    datatype=arg.datatype,
                     role="obj_key",
                     namespace=arg.namespace,
-                    name=f"obj_{arg.name}",
                 )
             )
         used_names = {arg.name for arg in sub_signature + obj_signature if arg.name}
-        normalized_props = PredicateSchema._normalize_signature(props, used=used_names)
+        normalized_props = PredicateSchema._normalize_signature(
+            props,
+            used=used_names,
+            allow_entity=False,
+        )
+        value_props: list[Value] = []
+        for arg in normalized_props:
+            if not isinstance(arg, Value):
+                raise SchemaError("Rel props must use Value arguments.")
+            value_props.append(arg)
         prop_signature = [
-            ArgSpec(
-                spec=arg.datatype,
+            Value(
+                name=arg.name,
+                datatype=arg.datatype,
                 role="prop",
                 namespace=arg.namespace,
-                name=arg.name,
             )
-            for arg in normalized_props
+            for arg in value_props
         ]
         signature = sub_signature + obj_signature + prop_signature
         super().__init__(
@@ -513,32 +657,50 @@ class Rel(PredicateSchema):
             kind="rel",
             sub_schema_id=sub.schema_id,
             obj_schema_id=obj.schema_id,
-            props=normalized_props,
+            props=value_props,
             endpoints=endpoints,
             merge_policy=merge_policy,
         )
-        object.__setattr__(self, "props", normalized_props)
-        derived_sub_args = [{"arg_name": "Sub", "datatype": "Fact"}]
+        object.__setattr__(self, "props", value_props)
+        derived_sub_args = [{"arg_name": "Sub", "datatype": "fact"}]
         for arg in sub.signature:
             role = "sub_key" if arg.name in sub_key_fields else "sub_attr"
-            derived_sub_args.append(
-                ArgSpec(
-                    spec=arg.datatype,
+            if role == "sub_key":
+                derived_arg = Entity(
+                    name=f"sub_{arg.name}",
+                    datatype=arg.datatype,
                     role=role,
                     namespace=arg.namespace,
+                )
+            else:
+                derived_arg = Value(
                     name=f"sub_{arg.name}",
-                ).to_dict()
+                    datatype=arg.datatype,
+                    role=role,
+                    namespace=arg.namespace,
+                )
+            derived_sub_args.append(
+                derived_arg.to_dict()
             )
-        derived_obj_args = [{"arg_name": "Obj", "datatype": "Fact"}]
+        derived_obj_args = [{"arg_name": "Obj", "datatype": "fact"}]
         for arg in obj.signature:
             role = "obj_key" if arg.name in obj_key_fields else "obj_attr"
-            derived_obj_args.append(
-                ArgSpec(
-                    spec=arg.datatype,
+            if role == "obj_key":
+                derived_arg = Entity(
+                    name=f"obj_{arg.name}",
+                    datatype=arg.datatype,
                     role=role,
                     namespace=arg.namespace,
+                )
+            else:
+                derived_arg = Value(
                     name=f"obj_{arg.name}",
-                ).to_dict()
+                    datatype=arg.datatype,
+                    role=role,
+                    namespace=arg.namespace,
+                )
+            derived_obj_args.append(
+                derived_arg.to_dict()
             )
         derived_prop_args = [arg.to_dict() for arg in prop_signature]
         object.__setattr__(
@@ -727,7 +889,7 @@ class FactSchema:
                     raise SchemaError("key_fields must be a list of strings.")
                 fact = Fact(
                     name=str(item["name"]),
-                    args=[ArgSpec.from_dict(arg) for arg in signature],
+                    args=[field_from_dict(arg) for arg in signature],
                     description=item.get("description"),
                     key_fields=key_fields,
                     merge_policy=item.get("merge_policy"),
@@ -754,7 +916,14 @@ class FactSchema:
             obj = by_id.get(str(obj_id))
             if sub is None or obj is None:
                 raise SchemaError("Rel predicate references unknown sub/obj schema.")
-            props = [ArgSpec.from_dict(arg) for arg in item.get("props", [])]
+            props: list[Value] = []
+            for arg in item.get("props", []):
+                if not isinstance(arg, dict):
+                    raise SchemaError("Rel props entries must be dicts.")
+                spec = field_from_dict(arg)
+                if isinstance(spec, Entity):
+                    raise SchemaError("Rel props must use Value, not Entity.")
+                props.append(spec)
             endpoints = item.get("endpoints")
             if endpoints is not None:
                 if not isinstance(endpoints, dict):
