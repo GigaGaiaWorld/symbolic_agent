@@ -1,3 +1,12 @@
+# Ignore all files at repository root by default.
+/*
+# Keep root directories so nested project files remain trackable.
+!/*/
+# Keep required root files.
+!/README.md
+!/pyproject.toml
+!/.gitignore
+
 .DS_Store
 __pycache__/
 *.py[cod]
@@ -9,11 +18,3 @@ build/
 .venv/
 venv/
 .env
-
-# Local scratch files
-/test.py
-/test.ipynb
-/test2.ipynb
-/README_backup.md
-/Docs.md
-/Logs/
