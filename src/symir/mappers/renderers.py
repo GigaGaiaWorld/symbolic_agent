@@ -492,5 +492,421 @@ class DatalogRenderer(Renderer):
 class CypherRenderer(Renderer):
     backend = "cypher"
 
-    def render_rule(self, rule: Rule, context: RenderContext) -> str:  # pragma: no cover - stub
-        raise RenderError("Cypher renderer not implemented yet.")
+    def __init__(
+        self,
+        *,
+        include_prob_in_rule_return: bool = True,
+        uppercase_rel_type: bool = True,
+    ) -> None:
+        self.include_prob_in_rule_return = include_prob_in_rule_return
+        self.uppercase_rel_type = uppercase_rel_type
+
+    def render_rule(self, rule: Rule, context: RenderContext) -> str:
+        queries: list[str] = []
+        for idx, cond in enumerate(rule.conditions):
+            lines = [f"// rule {rule.predicate.name} condition {idx}"]
+            builder = _CypherRuleBuilder(self, context)
+            builder.consume_literals(cond.literals)
+            query = builder.render_rule_query(
+                rule.predicate,
+                prob=cond.prob if self.include_prob_in_rule_return else None,
+            )
+            lines.append(query)
+            queries.append("\n".join(lines))
+        return ";\n\n".join(queries) + ";"
+
+    def render_facts(self, facts: list[Instance], context: RenderContext) -> str:
+        statements: list[str] = []
+        for instance in facts:
+            pred = context.schema.get(instance.schema_id)
+            if pred.kind == "fact":
+                label = self._label(pred.name)
+                key_fields = list(pred.key_fields or [])
+                key_map = {key: instance.props[key] for key in key_fields}
+                key_expr = self._map_literal(key_map)
+                prop_expr = self._map_literal(instance.props)
+                statements.append(
+                    f"MERGE (n:{label} {key_expr})\n"
+                    f"SET n += {prop_expr}"
+                )
+                continue
+
+            payload = instance.to_dict(include_keys=True)
+            sub_schema = context.schema.get(str(pred.sub_schema_id))
+            obj_schema = context.schema.get(str(pred.obj_schema_id))
+            sub_label = self._label(sub_schema.name)
+            obj_label = self._label(obj_schema.name)
+            rel_type = self._rel_type(pred.name)
+            sub_key_expr = self._map_literal(dict(payload.get("sub_key") or {}))
+            obj_key_expr = self._map_literal(dict(payload.get("obj_key") or {}))
+            rel_prop_expr = self._map_literal(instance.props)
+            statements.append(
+                f"MATCH (s:{sub_label} {sub_key_expr})\n"
+                f"MATCH (o:{obj_label} {obj_key_expr})\n"
+                f"MERGE (s)-[r:{rel_type}]->(o)\n"
+                f"SET r += {rel_prop_expr}"
+            )
+        return ";\n\n".join(statements) + (";" if statements else "")
+
+    def render_query(self, query: Query, context: RenderContext) -> str:
+        if query.predicate_id is not None:
+            predicate = context.schema.get(query.predicate_id)
+        elif query.predicate is not None:
+            predicate = query.predicate
+        else:
+            raise RenderError("Query requires predicate_id or predicate.")
+        if len(query.terms) != predicate.arity:
+            raise RenderError("Query terms length must match predicate arity.")
+        ref = Ref(schema=predicate, terms=list(query.terms))
+        builder = _CypherRuleBuilder(self, context)
+        builder.consume_literals([ref])
+        return builder.render_query_projection(query.terms) + ";"
+
+    def render_queries(self, queries: list[Query], context: RenderContext) -> str:
+        return "\n\n".join(self.render_query(query, context).rstrip(";") + ";" for query in queries)
+
+    def render_program(
+        self,
+        facts: list[Instance],
+        rules: list[Rule],
+        context: RenderContext,
+        queries: list[Query] | None = None,
+    ) -> str:
+        parts: list[str] = []
+        if facts:
+            parts.append(self.render_facts(facts, context))
+        if rules:
+            parts.append("\n\n".join(self.render_rule(rule, context).rstrip(";") + ";" for rule in rules))
+        if queries:
+            parts.append(self.render_queries(queries, context))
+        return "\n\n".join(part for part in parts if part)
+
+    def _label(self, name: str) -> str:
+        return f"`{name.replace('`', '``')}`"
+
+    def _rel_type(self, name: str) -> str:
+        rel = name.upper() if self.uppercase_rel_type else name
+        return f"`{rel.replace('`', '``')}`"
+
+    def _prop(self, alias: str, key: str) -> str:
+        return f"{alias}.`{key.replace('`', '``')}`"
+
+    def _literal(self, value: object) -> str:
+        if value is None:
+            return "null"
+        if isinstance(value, bool):
+            return "true" if value else "false"
+        if isinstance(value, (int, float)):
+            return str(value)
+        if isinstance(value, str):
+            return "'" + value.replace("\\", "\\\\").replace("'", "\\'") + "'"
+        raise RenderError(f"Unsupported Cypher literal type: {type(value)}")
+
+    def _map_literal(self, data: dict[str, object]) -> str:
+        items = [f"`{key.replace('`', '``')}`: {self._literal(value)}" for key, value in data.items()]
+        return "{ " + ", ".join(items) + " }"
+
+
+class _CypherRuleBuilder:
+    def __init__(self, renderer: CypherRenderer, context: RenderContext) -> None:
+        self.renderer = renderer
+        self.context = context
+        self.matches: list[str] = []
+        self.where: list[str] = []
+        self.bindings: dict[str, str] = {}
+        self._counter = 0
+
+    def consume_literals(self, literals: list[Ref | Expr]) -> None:
+        for literal in literals:
+            if isinstance(literal, Ref):
+                if literal.negated:
+                    self.where.append(self._render_negated_ref(literal))
+                else:
+                    self._consume_positive_ref(literal, allow_bind=True)
+                continue
+            if isinstance(literal, Expr):
+                self._consume_expr(literal.expr)
+                continue
+            raise RenderError("Unsupported literal type for Cypher renderer.")
+
+    def render_rule_query(self, head_predicate, prob: float | None) -> str:
+        parts: list[str] = []
+        if self.matches:
+            parts.extend(self.matches)
+        else:
+            parts.append("WITH 1 AS _")
+        if self.where:
+            parts.append("WHERE " + " AND ".join(self.where))
+        projections: list[str] = []
+        for arg in head_predicate.signature:
+            arg_name = arg.name or "Arg"
+            expr = self.bindings.get(arg_name, "null")
+            projections.append(f"{expr} AS `{arg_name}`")
+        if prob is not None:
+            projections.append(f"{prob} AS `prob`")
+        parts.append("RETURN DISTINCT " + ", ".join(projections))
+        return "\n".join(parts)
+
+    def render_query_projection(self, terms: list[ExprIR]) -> str:
+        parts: list[str] = []
+        if self.matches:
+            parts.extend(self.matches)
+        else:
+            parts.append("WITH 1 AS _")
+        if self.where:
+            parts.append("WHERE " + " AND ".join(self.where))
+        seen_vars: set[str] = set()
+        projections: list[str] = []
+        const_idx = 0
+        for term in terms:
+            if isinstance(term, Var):
+                expr = self.bindings.get(term.name)
+                if expr is None:
+                    raise RenderError(f"Unbound query variable: {term.name}")
+                if term.name in seen_vars:
+                    continue
+                seen_vars.add(term.name)
+                projections.append(f"{expr} AS `{term.name}`")
+            elif isinstance(term, Const):
+                const_idx += 1
+                projections.append(f"{self.renderer._literal(term.value)} AS `const_{const_idx}`")
+            else:
+                raise RenderError("Query terms must be Var or Const.")
+        if not projections:
+            projections.append("1 AS `_`")
+        parts.append("RETURN DISTINCT " + ", ".join(projections))
+        return "\n".join(parts)
+
+    def _consume_positive_ref(self, ref: Ref, *, allow_bind: bool) -> None:
+        pred = self.context.schema.get(ref.schema)
+        idx = self._counter
+        self._counter += 1
+        if pred.kind == "fact":
+            node_alias = f"n{idx}"
+            self.matches.append(f"MATCH ({node_alias}:{self.renderer._label(pred.name)})")
+            for term, arg in zip(ref.terms, pred.signature):
+                if arg.name is None:
+                    raise RenderError(f"Predicate {pred.name} has unnamed signature argument.")
+                prop_expr = self.renderer._prop(node_alias, arg.name)
+                self._consume_term(term, prop_expr, allow_bind=allow_bind)
+            return
+
+        sub_schema = self.context.schema.get(str(pred.sub_schema_id))
+        obj_schema = self.context.schema.get(str(pred.obj_schema_id))
+        sub_alias = f"s{idx}"
+        obj_alias = f"o{idx}"
+        rel_alias = f"r{idx}"
+        self.matches.append(
+            f"MATCH ({sub_alias}:{self.renderer._label(sub_schema.name)})"
+            f"-[{rel_alias}:{self.renderer._rel_type(pred.name)}]->"
+            f"({obj_alias}:{self.renderer._label(obj_schema.name)})"
+        )
+        for term, arg in zip(ref.terms, pred.signature):
+            if arg.name is None:
+                raise RenderError(f"Predicate {pred.name} has unnamed signature argument.")
+            if arg.role == "sub_key":
+                key = arg.name[4:] if arg.name.startswith("sub_") else arg.name
+                expr = self.renderer._prop(sub_alias, key)
+            elif arg.role == "obj_key":
+                key = arg.name[4:] if arg.name.startswith("obj_") else arg.name
+                expr = self.renderer._prop(obj_alias, key)
+            else:
+                expr = self.renderer._prop(rel_alias, arg.name)
+            self._consume_term(term, expr, allow_bind=allow_bind)
+
+    def _render_negated_ref(self, ref: Ref) -> str:
+        pred = self.context.schema.get(ref.schema)
+        idx = self._counter
+        self._counter += 1
+        local_where: list[str] = []
+        if pred.kind == "fact":
+            node_alias = f"nn{idx}"
+            match = f"MATCH ({node_alias}:{self.renderer._label(pred.name)})"
+            for term, arg in zip(ref.terms, pred.signature):
+                if arg.name is None:
+                    raise RenderError(f"Predicate {pred.name} has unnamed signature argument.")
+                expr = self.renderer._prop(node_alias, arg.name)
+                local_where.append(self._negated_term_condition(term, expr))
+            return self._exists_block(match, local_where, negate=True)
+
+        sub_schema = self.context.schema.get(str(pred.sub_schema_id))
+        obj_schema = self.context.schema.get(str(pred.obj_schema_id))
+        sub_alias = f"ns{idx}"
+        obj_alias = f"no{idx}"
+        rel_alias = f"nr{idx}"
+        match = (
+            f"MATCH ({sub_alias}:{self.renderer._label(sub_schema.name)})"
+            f"-[{rel_alias}:{self.renderer._rel_type(pred.name)}]->"
+            f"({obj_alias}:{self.renderer._label(obj_schema.name)})"
+        )
+        for term, arg in zip(ref.terms, pred.signature):
+            if arg.name is None:
+                raise RenderError(f"Predicate {pred.name} has unnamed signature argument.")
+            if arg.role == "sub_key":
+                key = arg.name[4:] if arg.name.startswith("sub_") else arg.name
+                expr = self.renderer._prop(sub_alias, key)
+            elif arg.role == "obj_key":
+                key = arg.name[4:] if arg.name.startswith("obj_") else arg.name
+                expr = self.renderer._prop(obj_alias, key)
+            else:
+                expr = self.renderer._prop(rel_alias, arg.name)
+            local_where.append(self._negated_term_condition(term, expr))
+        return self._exists_block(match, local_where, negate=True)
+
+    def _consume_expr(self, expr: ExprIR) -> None:
+        if isinstance(expr, Unify):
+            lhs_var = expr.lhs if isinstance(expr.lhs, Var) else None
+            rhs_var = expr.rhs if isinstance(expr.rhs, Var) else None
+            if lhs_var is not None and lhs_var.name not in self.bindings:
+                rhs_expr = self._expr_value(expr.rhs)
+                self.bindings[lhs_var.name] = rhs_expr
+                return
+            if rhs_var is not None and rhs_var.name not in self.bindings:
+                lhs_expr = self._expr_value(expr.lhs)
+                self.bindings[rhs_var.name] = lhs_expr
+                return
+            lhs_expr = self._expr_value(expr.lhs)
+            rhs_expr = self._expr_value(expr.rhs)
+            self.where.append(f"({lhs_expr} = {rhs_expr})")
+            return
+        self.where.append(self._expr_bool(expr))
+
+    def _expr_bool(self, expr: ExprIR) -> str:
+        if isinstance(expr, Ref):
+            return self._render_negated_ref(expr) if expr.negated else self._render_exists_ref(expr)
+        if isinstance(expr, NotExpr):
+            return f"(NOT ({self._expr_bool(expr.expr)}))"
+        if isinstance(expr, Call):
+            return self._call(expr)
+        if isinstance(expr, If):
+            cond = self._expr_bool(expr.cond)
+            then = self._expr_value(expr.then)
+            else_ = self._expr_value(expr.else_)
+            return f"(CASE WHEN {cond} THEN {then} ELSE {else_} END)"
+        if isinstance(expr, Unify):
+            lhs = self._expr_value(expr.lhs)
+            rhs = self._expr_value(expr.rhs)
+            return f"({lhs} = {rhs})"
+        if isinstance(expr, (Var, Const)):
+            return self._expr_value(expr)
+        raise RenderError(f"Unsupported ExprIR type in Cypher renderer: {type(expr)}")
+
+    def _expr_value(self, expr: ExprIR) -> str:
+        if isinstance(expr, Var):
+            bound = self.bindings.get(expr.name)
+            if bound is None:
+                raise RenderError(f"Unbound variable in Cypher expression: {expr.name}")
+            return bound
+        if isinstance(expr, Const):
+            return self.renderer._literal(expr.value)
+        if isinstance(expr, Call):
+            return self._call(expr)
+        if isinstance(expr, If):
+            cond = self._expr_bool(expr.cond)
+            then = self._expr_value(expr.then)
+            else_ = self._expr_value(expr.else_)
+            return f"(CASE WHEN {cond} THEN {then} ELSE {else_} END)"
+        if isinstance(expr, Unify):
+            lhs = self._expr_value(expr.lhs)
+            rhs = self._expr_value(expr.rhs)
+            return f"({lhs} = {rhs})"
+        if isinstance(expr, Ref):
+            return self._render_exists_ref(expr)
+        if isinstance(expr, NotExpr):
+            return f"(NOT ({self._expr_bool(expr.expr)}))"
+        raise RenderError(f"Unsupported ExprIR value for Cypher renderer: {type(expr)}")
+
+    def _call(self, call: Call) -> str:
+        args = [self._expr_value(arg) for arg in call.args]
+        infix = {
+            "eq": "=",
+            "ne": "<>",
+            "lt": "<",
+            "le": "<=",
+            "gt": ">",
+            "ge": ">=",
+            "add": "+",
+            "sub": "-",
+            "mul": "*",
+            "div": "/",
+            "mod": "%",
+        }
+        if call.op in infix and len(args) == 2:
+            return f"({args[0]} {infix[call.op]} {args[1]})"
+        op = call.op.replace("`", "``")
+        return f"{op}({', '.join(args)})"
+
+    def _render_exists_ref(self, ref: Ref) -> str:
+        pred = self.context.schema.get(ref.schema)
+        idx = self._counter
+        self._counter += 1
+        local_where: list[str] = []
+        if pred.kind == "fact":
+            node_alias = f"en{idx}"
+            match = f"MATCH ({node_alias}:{self.renderer._label(pred.name)})"
+            for term, arg in zip(ref.terms, pred.signature):
+                if arg.name is None:
+                    raise RenderError(f"Predicate {pred.name} has unnamed signature argument.")
+                expr = self.renderer._prop(node_alias, arg.name)
+                local_where.append(self._negated_term_condition(term, expr))
+            return self._exists_block(match, local_where, negate=False)
+
+        sub_schema = self.context.schema.get(str(pred.sub_schema_id))
+        obj_schema = self.context.schema.get(str(pred.obj_schema_id))
+        sub_alias = f"es{idx}"
+        obj_alias = f"eo{idx}"
+        rel_alias = f"er{idx}"
+        match = (
+            f"MATCH ({sub_alias}:{self.renderer._label(sub_schema.name)})"
+            f"-[{rel_alias}:{self.renderer._rel_type(pred.name)}]->"
+            f"({obj_alias}:{self.renderer._label(obj_schema.name)})"
+        )
+        for term, arg in zip(ref.terms, pred.signature):
+            if arg.name is None:
+                raise RenderError(f"Predicate {pred.name} has unnamed signature argument.")
+            if arg.role == "sub_key":
+                key = arg.name[4:] if arg.name.startswith("sub_") else arg.name
+                expr = self.renderer._prop(sub_alias, key)
+            elif arg.role == "obj_key":
+                key = arg.name[4:] if arg.name.startswith("obj_") else arg.name
+                expr = self.renderer._prop(obj_alias, key)
+            else:
+                expr = self.renderer._prop(rel_alias, arg.name)
+            local_where.append(self._negated_term_condition(term, expr))
+        return self._exists_block(match, local_where, negate=False)
+
+    def _exists_block(self, match: str, local_where: list[str], *, negate: bool) -> str:
+        lines = ["NOT EXISTS {" if negate else "EXISTS {", f"  {match}"]
+        if local_where:
+            lines.append("  WHERE " + " AND ".join(local_where))
+        lines.append("}")
+        return "\n".join(lines)
+
+    def _consume_term(self, term: ExprIR, prop_expr: str, *, allow_bind: bool) -> None:
+        if isinstance(term, Const):
+            self.where.append(f"({prop_expr} = {self.renderer._literal(term.value)})")
+            return
+        if isinstance(term, Var):
+            bound = self.bindings.get(term.name)
+            if bound is None:
+                if not allow_bind:
+                    raise RenderError(
+                        f"Unsafe variable '{term.name}' in negated/existential ref for Cypher renderer."
+                    )
+                self.bindings[term.name] = prop_expr
+                return
+            self.where.append(f"({bound} = {prop_expr})")
+            return
+        raise RenderError("Ref term must be Var or Const.")
+
+    def _negated_term_condition(self, term: ExprIR, prop_expr: str) -> str:
+        if isinstance(term, Const):
+            return f"({prop_expr} = {self.renderer._literal(term.value)})"
+        if isinstance(term, Var):
+            bound = self.bindings.get(term.name)
+            if bound is None:
+                raise RenderError(
+                    f"Unsafe variable '{term.name}' in negated/existential ref for Cypher renderer."
+                )
+            return f"({prop_expr} = {bound})"
+        raise RenderError("Ref term must be Var or Const.")

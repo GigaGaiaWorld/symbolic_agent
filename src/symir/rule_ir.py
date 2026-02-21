@@ -26,6 +26,12 @@ from symir.rules.constraint_schemas import (
     build_predicate_catalog,
 )
 from symir.fact_store.provider import DataProvider, CSVProvider, CSVSource
+from symir.fact_store.neo4j_component import (
+    Neo4jCfg,
+    Neo4jComponent,
+    read_col_csv as neo4j_read_col_csv,
+    read_rel_csv as neo4j_read_rel_csv,
+)
 from symir.fact_store.rel_builder import RelBuilder
 from symir.mappers.renderers import (
     Renderer,
@@ -76,6 +82,10 @@ __all__ = [
     "DataProvider",
     "CSVProvider",
     "CSVSource",
+    "Neo4jCfg",
+    "Neo4jComponent",
+    "neo4j_read_col_csv",
+    "neo4j_read_rel_csv",
     "RelBuilder",
     "Renderer",
     "ProbLogRenderer",

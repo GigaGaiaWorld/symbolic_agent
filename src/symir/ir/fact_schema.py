@@ -28,14 +28,7 @@ DatalogDatatype: TypeAlias = Literal[
     "int",
     "float",
     "bool",
-    "atom",
-    "symbol",
-    "term",
-    "number",
-    "list",
-    "tuple",
     "any",
-    "fact",
 ]
 _ALLOWED_DATATYPES = set(get_args(DatalogDatatype))
 

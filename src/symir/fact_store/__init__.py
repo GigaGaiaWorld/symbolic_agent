@@ -7,6 +7,12 @@ from symir.fact_store.provider import (
     CSVSource,
 )
 from symir.fact_store.rel_builder import RelBuilder
+from symir.fact_store.neo4j_component import (
+    Neo4jCfg,
+    Neo4jComponent,
+    read_col_csv,
+    read_rel_csv,
+)
 from symir.ir.instance import Instance
 
 __all__ = [
@@ -15,5 +21,9 @@ __all__ = [
     "CSVProvider",
     "CSVSource",
     "RelBuilder",
+    "Neo4jCfg",
+    "Neo4jComponent",
+    "read_col_csv",
+    "read_rel_csv",
     "Instance",
 ]

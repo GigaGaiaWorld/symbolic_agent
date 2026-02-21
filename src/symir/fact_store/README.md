@@ -178,3 +178,53 @@ Common errors:
 `CsvFactStore` is a separate loader that uses the lightweight mapping schema in
 `symir.ir.schema`. It yields `IRAtom` objects for rule evaluation and is kept for
 backwards compatibility with the older CSV mapping format.
+
+## Neo4jComponent (non-invasive)
+
+`Neo4jComponent` is an optional writer for Neo4j. It does not change existing provider flows.
+You can use it in two modes:
+
+- example-style import (`schema + nodes + rels`)
+- project-native import (`FactSchema/FactView + Instance` list)
+
+```python
+from symir.fact_store.neo4j_component import Neo4jCfg, Neo4jComponent
+
+cfg = Neo4jCfg(
+    uri="bolt://localhost:7687",
+    user="neo4j",
+    password="your-password",
+    database="neo4j",
+)
+writer = Neo4jComponent(cfg)
+```
+
+Example-style import (similar to `example_neo4j.txt`):
+
+```python
+schema = {"nodes": {"Person": ["name"], "Company": ["name"]}}
+nodes = {"Person": ["alice"], "Company": ["openai"]}
+rels = {("Person", "works_at", "Company"): [("alice", "openai")]}
+writer.import_graph(schema=schema, nodes=nodes, rels=rels)
+```
+
+Project-native import:
+
+```python
+instances = provider.query(schema.view([person, company, lives_in]))
+writer.import_instances(schema=schema, instances=instances)
+```
+
+Render first, execute later:
+
+```python
+script = writer.render_cypher_for_instances(schema=schema, instances=instances)
+print(script)
+writer.execute_cypher(script)
+```
+
+Notes:
+
+- `import_instances(...)` first renders Cypher via `CypherRenderer`, then executes those statements.
+- live execution requires `neo4j` Python driver (`pip install neo4j`).
+- you can inject a custom `runner` into `Neo4jComponent` for testing or external transaction management.

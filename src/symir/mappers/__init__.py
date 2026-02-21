@@ -1,6 +1,5 @@
 """Target-language mappers."""
 
-from symir.mappers.problog import ProbLogMapper, to_problog
 from symir.mappers.renderers import (
     Renderer,
     ProbLogRenderer,
@@ -11,8 +10,6 @@ from symir.mappers.renderers import (
 )
 
 __all__ = [
-    "ProbLogMapper",
-    "to_problog",
     "Renderer",
     "ProbLogRenderer",
     "PrologRenderer",

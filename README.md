@@ -23,6 +23,26 @@ pip install -e .
 - `rule_ir.py`: Unified entrypoint for rule schema/IR (rules, filters, providers, renderers).
 - `tests/`: Minimal tests for CSV loading, schema generation, and mapping.
 
+## Documentation
+
+- FactPy 主文档：
+  - `factpy.md` — 完整架构、核心语义、全流程示例、API 速查与限制说明。
+- ER (Entity Resolution) module:
+  - `docs/er.md` — Mention/Canonical conventions, `canon_of` single-valued semantics, `canon_policy`, and `policy_mode` boundaries.
+  - `docs/er_recipes.md` — integration/bridge recipes, import patterns, and troubleshooting checklist.
+
+## Architecture at a Glance
+
+FactPy compiles Python-authored Schema/Facts/Rules into ProbLog/Datalog-style programs (EDB + IDB), with append-only assertion semantics for auditability and reproducibility:
+
+- Storage semantics: writes append to `claim(A, PredId, S, O)`; history is never physically overwritten by default.
+- Meta semantics: assertion metadata is stored in `meta_*` predicates with strict validation (unknown keys fail by default).
+- View semantics: business logic targets `*_view` predicates; `active(A)` and `chosen(A)` project stable views from `claim`.
+- Multi-arity facts: `S` is the primary entity; `O` is `typed_tuple_v1(rest_terms)`; exporters also emit `claim_arg(A, idx, val, tag)` for portable tuple unpack.
+- Rules: DSL compiles to Horn-style RuleIR; reified entities must be expanded into explicit predicate atoms.
+- ER: Mention/Canonical layering with `canon_of(Mention, Canonical)` single-valued mapping; default conflicts raise errors, optional deterministic `canon_policy` is explicit.
+- Dialect boundary: if target engines cannot express deterministic chosen/tie-break logic in IDB, use `policy_mode="edb"` to precompute policy facts in Python and export as EDB.
+
 ## Fact/Rel Schema (preferred)
 
 `Fact` and `Rel` are the canonical schema layer:
@@ -1224,8 +1244,8 @@ Expression ops:
 
 Renderer status:
 
-- `ProbLogRenderer` and `PrologRenderer` are usable.
-- `DatalogRenderer` and `CypherRenderer` are currently stubs and raise `RenderError`.
+- `ProbLogRenderer`, `PrologRenderer`, and `CypherRenderer` are usable.
+- `DatalogRenderer` is currently a stub and raises `RenderError`.
 
 ### LLM Constraint Schemas
 
@@ -1338,6 +1358,7 @@ from symir.rule_ir import (
     RuleValidator, ProbabilityConfig,
     build_pydantic_rule_model, build_responses_schema, build_predicate_catalog,
     DataProvider, CSVProvider, CSVSource,
+    Neo4jCfg, Neo4jComponent, neo4j_read_col_csv, neo4j_read_rel_csv,
     Renderer, ProbLogRenderer, PrologRenderer, DatalogRenderer, CypherRenderer, RenderContext,
 )
 from symir.ir.instance import Instance
