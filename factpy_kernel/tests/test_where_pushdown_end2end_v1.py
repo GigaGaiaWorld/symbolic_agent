@@ -55,11 +55,46 @@ class WherePushdownEnd2EndV1Tests(unittest.TestCase):
                     ],
                     "group_key_indexes": [0],
                     "cardinality": "functional",
-                }
+                },
+                {
+                    "pred_id": "person:blob",
+                    "arg_specs": [
+                        {"name": "E", "type_domain": "entity_ref"},
+                        {"name": "blob", "type_domain": "bytes"},
+                    ],
+                    "group_key_indexes": [0],
+                    "cardinality": "functional",
+                },
+                {
+                    "pred_id": "person:uid",
+                    "arg_specs": [
+                        {"name": "E", "type_domain": "entity_ref"},
+                        {"name": "uid", "type_domain": "uuid"},
+                    ],
+                    "group_key_indexes": [0],
+                    "cardinality": "functional",
+                },
+                {
+                    "pred_id": "person:score",
+                    "arg_specs": [
+                        {"name": "E", "type_domain": "entity_ref"},
+                        {"name": "score", "type_domain": "float64"},
+                    ],
+                    "group_key_indexes": [0],
+                    "cardinality": "functional",
+                },
             ],
             "projection": {
                 "entities": [],
-                "predicates": ["person:country", "person:rank", "person:flag", "person:seen_at"],
+                "predicates": [
+                    "person:country",
+                    "person:rank",
+                    "person:flag",
+                    "person:seen_at",
+                    "person:blob",
+                    "person:uid",
+                    "person:score",
+                ],
             },
             "protocol_version": {
                 "idref_v1": "idref_v1",
@@ -192,6 +227,102 @@ class WherePushdownEnd2EndV1Tests(unittest.TestCase):
         candidate = candidates[0]
         self.assertEqual(candidate.payload["e_ref"], e_ref)
         self.assertEqual(candidate.payload["rest_terms"], [("time", ts)])
+        self.assertTrue(candidate.key_tuple_digest.startswith("sha256:"))
+
+    def test_where_pushdown_bytes_roundtrip(self) -> None:
+        if find_souffle_binary() is None:
+            self.skipTest("souffle binary not found")
+
+        store = Store(schema_ir=self.schema_ir)
+        e_ref = "idref_v1:Person:pushdown-bytes"
+        blob = b"\x01\x02\x03"
+        set_field(
+            store.ledger,
+            pred_id="person:blob",
+            e_ref=e_ref,
+            rest_terms=[("bytes", blob)],
+            meta={"source": "test", "source_loc": "row-1"},
+        )
+
+        candidates = store.evaluate_engine(
+            derivation_id="drv.where.pushdown.bytes",
+            version="v1",
+            target_pred_id="person:blob",
+            head_vars=["$E", "$blob"],
+            where=[
+                ("pred", "person:blob", ["$E", "$blob"]),
+                ("eq", "$blob", "AQID"),
+            ],
+        )
+
+        self.assertTrue(candidates)
+        candidate = candidates[0]
+        self.assertEqual(candidate.payload["e_ref"], e_ref)
+        self.assertEqual(candidate.payload["rest_terms"], [("bytes", blob)])
+        self.assertTrue(candidate.key_tuple_digest.startswith("sha256:"))
+
+    def test_where_pushdown_uuid_roundtrip(self) -> None:
+        if find_souffle_binary() is None:
+            self.skipTest("souffle binary not found")
+
+        store = Store(schema_ir=self.schema_ir)
+        e_ref = "idref_v1:Person:pushdown-uuid"
+        uid = "123e4567-e89b-12d3-a456-426614174000"
+        set_field(
+            store.ledger,
+            pred_id="person:uid",
+            e_ref=e_ref,
+            rest_terms=[("uuid", uid)],
+            meta={"source": "test", "source_loc": "row-1"},
+        )
+
+        candidates = store.evaluate_engine(
+            derivation_id="drv.where.pushdown.uuid",
+            version="v1",
+            target_pred_id="person:uid",
+            head_vars=["$E", "$uid"],
+            where=[
+                ("pred", "person:uid", ["$E", "$uid"]),
+                ("eq", "$uid", uid),
+            ],
+        )
+
+        self.assertTrue(candidates)
+        candidate = candidates[0]
+        self.assertEqual(candidate.payload["e_ref"], e_ref)
+        self.assertEqual(candidate.payload["rest_terms"], [("uuid", uid)])
+        self.assertTrue(candidate.key_tuple_digest.startswith("sha256:"))
+
+    def test_where_pushdown_float64_roundtrip(self) -> None:
+        if find_souffle_binary() is None:
+            self.skipTest("souffle binary not found")
+
+        store = Store(schema_ir=self.schema_ir)
+        e_ref = "idref_v1:Person:pushdown-float64"
+        score_bits = "0x3ff0000000000000"
+        set_field(
+            store.ledger,
+            pred_id="person:score",
+            e_ref=e_ref,
+            rest_terms=[("float64", score_bits)],
+            meta={"source": "test", "source_loc": "row-1"},
+        )
+
+        candidates = store.evaluate_engine(
+            derivation_id="drv.where.pushdown.float64",
+            version="v1",
+            target_pred_id="person:score",
+            head_vars=["$E", "$score"],
+            where=[
+                ("pred", "person:score", ["$E", "$score"]),
+                ("eq", "$score", score_bits),
+            ],
+        )
+
+        self.assertTrue(candidates)
+        candidate = candidates[0]
+        self.assertEqual(candidate.payload["e_ref"], e_ref)
+        self.assertEqual(candidate.payload["rest_terms"], [("float64", score_bits)])
         self.assertTrue(candidate.key_tuple_digest.startswith("sha256:"))
 
 

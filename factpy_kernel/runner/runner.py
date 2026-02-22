@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import csv
 import hashlib
 import json
 import os
@@ -210,10 +211,19 @@ def _build_program_file(pkg_dir: Path, manifest: dict[str, Any], work_dir: Path)
 
     view_text = view_path.read_text(encoding="utf-8")
     idb_text = idb_path.read_text(encoding="utf-8")
+    policy_mode = manifest.get("policy_mode", "edb")
+    if policy_mode not in {"edb", "idb"}:
+        raise RunnerCapabilityError(f"unsupported policy_mode: {policy_mode}")
+    policy_text = ""
+    if policy_mode == "idb":
+        policy_rules_path = pkg_dir / "policy" / "policy_rules.dl"
+        if not policy_rules_path.exists():
+            raise FileNotFoundError(f"missing policy rules: {policy_rules_path}")
+        policy_text = policy_rules_path.read_text(encoding="utf-8")
 
     program_path = work_dir / "program.dl"
     program_path.write_text(
-        "\n".join([view_text, idb_text]) + "\n",
+        "\n".join([view_text, policy_text, idb_text]) + "\n",
         encoding="utf-8",
         newline="\n",
     )
@@ -239,15 +249,22 @@ def _convert_raw_outputs(raw_dir: Path, outputs_dir: Path) -> None:
 
 
 def _parse_souffle_line(line: str, file_name: str) -> list[str]:
-    if '"' in line:
-        raise RunnerCapabilityError(
-            f"unsupported quoted CSV output in {file_name}; only unquoted rows are supported"
-        )
-
-    if "\t" in line:
+    if "\t" in line and "," not in line:
         parts = line.split("\t")
     else:
-        parts = line.split(",")
+        try:
+            reader = csv.reader(
+                [line],
+                delimiter=",",
+                quotechar='"',
+                escapechar="\\",
+                strict=True,
+            )
+            parts = next(reader)
+        except csv.Error as exc:
+            raise RunnerCapabilityError(
+                f"invalid quoted CSV output in {file_name}: {exc}"
+            ) from exc
 
     return [part for part in parts]
 

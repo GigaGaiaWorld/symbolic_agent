@@ -6,7 +6,12 @@ import unittest
 from pathlib import Path
 
 from factpy_kernel.export.package import ExportOptions, export_package
-from factpy_kernel.runner.runner import find_souffle_binary, run_package
+from factpy_kernel.runner.runner import (
+    RunnerCapabilityError,
+    _parse_souffle_line,
+    find_souffle_binary,
+    run_package,
+)
 from factpy_kernel.store.api import Store
 
 
@@ -93,6 +98,14 @@ p_person_country("x", "y").
 
             out_file = out_dir / "outputs" / "p_person_country.out.facts"
             self.assertTrue(out_file.exists())
+
+    def test_parse_souffle_line_supports_quoted_csv(self) -> None:
+        parsed = _parse_souffle_line('"x,y","z"', "sample.csv")
+        self.assertEqual(parsed, ["x,y", "z"])
+
+    def test_parse_souffle_line_rejects_invalid_quoted_csv(self) -> None:
+        with self.assertRaises(RunnerCapabilityError):
+            _parse_souffle_line('"x,y","z', "bad.csv")
 
 
 if __name__ == "__main__":

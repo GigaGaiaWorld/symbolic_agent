@@ -14,6 +14,10 @@ from factpy_kernel.derivation.accept import AcceptOptions, AcceptResult, accept_
 from factpy_kernel.derivation.candidates import CandidateSet, make_candidate
 from factpy_kernel.evidence.write_protocol import now_epoch_nanos
 from factpy_kernel.export.tsv_v1 import tsv_cell_v1_decode
+from factpy_kernel.mapping.canon import (
+    MappingResolution,
+    resolve_mapping_predicate,
+)
 from factpy_kernel.policy.active import is_active
 from factpy_kernel.policy.chosen import compute_chosen_for_predicate
 from factpy_kernel.protocol.digests import sha256_token
@@ -42,7 +46,10 @@ class Store:
         head_vars: list[Any],
         where: list[Any],
         mode: str = "python",
+        temporal_view: str = "record",
     ) -> list[CandidateSet]:
+        if temporal_view not in {"record", "current"}:
+            raise ValueError("temporal_view must be 'record' or 'current'")
         if mode == "engine":
             return self.evaluate_engine(
                 derivation_id=derivation_id,
@@ -50,6 +57,7 @@ class Store:
                 target_pred_id=target_pred_id,
                 head_vars=head_vars,
                 where=where,
+                temporal_view=temporal_view,
             )
         if mode != "python":
             raise ValueError("mode must be 'python' or 'engine'")
@@ -67,7 +75,11 @@ class Store:
         if "$E" not in head_vars:
             raise WhereValidationError("head_vars must include $E")
 
-        view_facts = project_view_facts(self.ledger, self.schema_ir)
+        view_facts = project_view_facts(
+            self.ledger,
+            self.schema_ir,
+            temporal_view=temporal_view,
+        )
         bindings = evaluate_where(view_facts, where)
         if not bindings:
             return []
@@ -89,8 +101,11 @@ class Store:
         target_pred_id: str,
         head_vars: list[Any],
         where: list[Any],
+        temporal_view: str = "record",
     ) -> list[CandidateSet]:
         """Internal/legacy entrypoint; prefer evaluate(mode='engine')."""
+        if temporal_view not in {"record", "current"}:
+            raise ValueError("temporal_view must be 'record' or 'current'")
         schema_pred = self._find_schema_pred(target_pred_id)
         if schema_pred is None:
             raise WhereValidationError(f"target predicate not found: {target_pred_id}")
@@ -125,7 +140,11 @@ class Store:
                 self,
                 out_dir,
                 ExportOptions(),
-                query={"where": where, "query_rel": query_rel},
+                query={
+                    "where": where,
+                    "query_rel": query_rel,
+                    "temporal_view": temporal_view,
+                },
             )
             manifest = json.loads(manifest_path.read_text(encoding="utf-8"))
             outputs_map = manifest.get("outputs_map", {})
@@ -133,7 +152,18 @@ class Store:
             if query_outputs != [query_rel]:
                 raise WhereValidationError("query outputs_map is missing or invalid")
 
-            run_package(out_dir, ["__query__"], engine="souffle")
+            run_manifest_path = run_package(out_dir, ["__query__"], engine="souffle")
+            run_manifest = json.loads(run_manifest_path.read_text(encoding="utf-8"))
+            engine_mode = run_manifest.get("engine_mode")
+            exit_code = run_manifest.get("exit_code")
+            if engine_mode != "souffle":
+                raise WhereValidationError(
+                    "engine evaluate requires souffle execution (runner fell back to noop)"
+                )
+            if exit_code != 0:
+                raise WhereValidationError(
+                    f"engine evaluate failed with non-zero exit_code: {exit_code}"
+                )
             out_path = out_dir / "outputs" / f"{query_rel}.out.facts"
             bindings = self._read_query_bindings(out_path, where_variables)
 
@@ -265,6 +295,31 @@ class Store:
             "active_asrt_ids": active_asrt_ids,
             "chosen_asrt_id": chosen_asrt_id,
         }
+
+    def resolve_mapping(self, pred_id: str, *, policy_mode: str = "edb") -> MappingResolution:
+        if policy_mode not in {"edb", "idb"}:
+            raise ValueError("policy_mode must be 'edb' or 'idb'")
+        schema_pred = self._find_schema_pred(pred_id)
+        if schema_pred is None:
+            raise WhereValidationError(f"target predicate not found: {pred_id}")
+
+        tie_break = schema_pred.get("tie_break")
+        tie_break_mode: str | None = None
+        if isinstance(tie_break, dict):
+            mode = tie_break.get("mode")
+            if isinstance(mode, str):
+                tie_break_mode = mode
+        elif isinstance(tie_break, str):
+            tie_break_mode = tie_break
+        elif tie_break is None:
+            tie_break_mode = "error"
+
+        if policy_mode == "idb" and tie_break_mode not in {"error", None}:
+            raise NotImplementedError(
+                "mapping tie-break requires policy_mode='edb' for deterministic precompute"
+            )
+
+        return resolve_mapping_predicate(self.ledger, schema_pred)
 
     def _candidates_from_bindings(
         self,

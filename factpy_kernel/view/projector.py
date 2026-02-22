@@ -3,7 +3,12 @@ from __future__ import annotations
 from typing import Any
 
 from factpy_kernel.policy.active import is_active
-from factpy_kernel.policy.chosen import PolicyNonDeterminismError, compute_chosen_for_predicate
+from factpy_kernel.policy.chosen import (
+    PolicyNonDeterminismError,
+    choose_one,
+    compute_chosen_for_predicate,
+    group_key_for_claim,
+)
 from factpy_kernel.store.ledger import Claim, Ledger
 
 
@@ -36,11 +41,18 @@ def build_args_for_claim(ledger: Ledger, claim: Claim) -> tuple[Any, ...]:
     return (claim.e_ref, *[row.val_atom for row in sorted_rows])
 
 
-def project_view_facts(ledger: Ledger, schema_ir: dict) -> dict[str, list[tuple[Any, ...]]]:
+def project_view_facts(
+    ledger: Ledger,
+    schema_ir: dict,
+    *,
+    temporal_view: str = "record",
+) -> dict[str, list[tuple[Any, ...]]]:
     if not isinstance(ledger, Ledger):
         raise TypeError("ledger must be Ledger")
     if not isinstance(schema_ir, dict):
         raise ViewProjectionError("schema_ir must be dict")
+    if temporal_view not in {"record", "current"}:
+        raise ViewProjectionError("temporal_view must be 'record' or 'current'")
 
     predicates = schema_ir.get("predicates")
     if not isinstance(predicates, list):
@@ -75,8 +87,23 @@ def project_view_facts(ledger: Ledger, schema_ir: dict) -> dict[str, list[tuple[
         elif cardinality == "multi":
             selected_claims = active_claims
         elif cardinality == "temporal":
-            # MVP hard constraint: temporal predicates are projected like multi for now.
-            selected_claims = active_claims
+            if temporal_view == "record":
+                selected_claims = active_claims
+            else:
+                try:
+                    groups: dict[tuple[Any, ...], list[Claim]] = {}
+                    for claim in active_claims:
+                        group_key = group_key_for_claim(schema_pred, claim, ledger=ledger)
+                        groups.setdefault(group_key, []).append(claim)
+                    selected_claims = []
+                    for claims in groups.values():
+                        chosen_asrt_id = choose_one(ledger, [claim.asrt_id for claim in claims])
+                        for claim in claims:
+                            if claim.asrt_id == chosen_asrt_id:
+                                selected_claims.append(claim)
+                                break
+                except PolicyNonDeterminismError as exc:
+                    raise ViewProjectionError(str(exc)) from exc
         else:
             raise ViewProjectionError(f"unsupported cardinality: {cardinality}")
 

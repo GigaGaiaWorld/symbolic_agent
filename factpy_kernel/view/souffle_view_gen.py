@@ -3,7 +3,7 @@ from __future__ import annotations
 from factpy_kernel.export.pred_norm import normalize_pred_id
 
 
-def generate_view_dl(schema_ir: dict) -> str:
+def generate_view_dl(schema_ir: dict, *, include_active_rule: bool = True) -> str:
     if not isinstance(schema_ir, dict):
         raise TypeError("schema_ir must be dict")
 
@@ -21,10 +21,15 @@ def generate_view_dl(schema_ir: dict) -> str:
         '.input meta_time',
         '.input revokes',
         '',
-        '.decl active(A:symbol)',
-        'active(A) :- claim(A,_,_,_), !revokes(_,A).',
-        '',
     ]
+    if include_active_rule:
+        lines.extend(
+            [
+                '.decl active(A:symbol)',
+                'active(A) :- claim(A,_,_,_), !revokes(_,A).',
+                '',
+            ]
+        )
 
     for predicate in predicates:
         if not isinstance(predicate, dict):
@@ -58,9 +63,7 @@ def generate_view_dl(schema_ir: dict) -> str:
         lines.append(f'.output {engine_pred}')
 
         output_head = f'{engine_pred}({", ".join(["E", *value_vars])})'
-        # temporal current is intentionally unimplemented in MVP; temporal emits
-        # record view only (same active-only projection semantics as multi).
-        if cardinality in {"multi", "temporal"}:
+        if cardinality == "multi":
             output_body_parts = [
                 f'claim(A,"{pred_id}",E,_)',
                 "active(A)",
@@ -70,6 +73,100 @@ def generate_view_dl(schema_ir: dict) -> str:
                 ],
             ]
             lines.append(f'{output_head} :- {", ".join(output_body_parts)}.')
+            lines.append("")
+            continue
+
+        if cardinality == "temporal":
+            # temporal record view: output all active rows (same as multi)
+            output_body_parts = [
+                f'claim(A,"{pred_id}",E,_)',
+                "active(A)",
+                *[
+                    f'claim_arg(A,"{idx}",{value_var},TagOut{idx})'
+                    for idx, value_var in enumerate(value_vars)
+                ],
+            ]
+            lines.append(f'{output_head} :- {", ".join(output_body_parts)}.')
+            lines.append("")
+
+            current_pred = f"{engine_pred}__current"
+            current_value_vars = [f"CV{i}" for i in range(arg_count - 1)]
+            current_decl_args = ["E:symbol", *[f"{var}:symbol" for var in current_value_vars]]
+            lines.append(f'.decl {current_pred}({", ".join(current_decl_args)})')
+            lines.append(f'.output {current_pred}')
+
+            dim_indexes = [index for index in normalized_group_indexes if index > 0]
+            dim_vars = [f"D{i}" for i in range(len(dim_indexes))]
+
+            cand_rel = f"cand__{engine_pred}__current"
+            max_ts_rel = f"max_ts__{engine_pred}__current"
+            chosen_rel = f"chosen_asrt__{engine_pred}__current"
+            better_rel = f"better_asrt__{engine_pred}__current"
+
+            cand_decl_args = [
+                "A:symbol",
+                "E:symbol",
+                *[f"{var}:symbol" for var in dim_vars],
+                "Ts:number",
+            ]
+            lines.append(f'.decl {cand_rel}({", ".join(cand_decl_args)})')
+
+            cand_body_parts = [
+                f'claim(A,"{pred_id}",E,_)',
+                'active(A)',
+                'meta_time(A,"ingested_at",Ts)',
+            ]
+            for dim_position, arg_index in enumerate(dim_indexes):
+                claim_idx = str(arg_index - 1)
+                dim_var = dim_vars[dim_position]
+                cand_body_parts.append(
+                    f'claim_arg(A,"{claim_idx}",{dim_var},TagDim{dim_position})'
+                )
+            lines.append(
+                f'{cand_rel}(A,{", ".join(["E", *dim_vars, "Ts"])}) :- {", ".join(cand_body_parts)}.'
+            )
+            lines.append('')
+
+            max_decl_args = ["E:symbol", *[f"{var}:symbol" for var in dim_vars], "Ts:number"]
+            lines.append(f'.decl {max_ts_rel}({", ".join(max_decl_args)})')
+            key_vars = ["E", *dim_vars]
+            key_args = ", ".join(key_vars)
+            lines.append(
+                f'{max_ts_rel}({", ".join([*key_vars, "Ts"])}) :- '
+                f'{cand_rel}(_,{key_args},_), '
+                f'Ts = max t : {{ {cand_rel}(_,{key_args},t) }}.'
+            )
+            lines.append('')
+
+            better_decl_args = ["E:symbol", *[f"{var}:symbol" for var in dim_vars], "A:symbol"]
+            lines.append(f'.decl {better_rel}({", ".join(better_decl_args)})')
+            lines.append(
+                f'{better_rel}({", ".join([*key_vars, "A"])}) :- '
+                f'{cand_rel}(A,{", ".join([*key_vars, "Ts"])}), '
+                f'{max_ts_rel}({", ".join([*key_vars, "Ts"])}), '
+                f'{cand_rel}(B,{", ".join([*key_vars, "Ts"])}), B < A.'
+            )
+            lines.append('')
+
+            chosen_decl_args = ["E:symbol", *[f"{var}:symbol" for var in dim_vars], "A:symbol"]
+            lines.append(f'.decl {chosen_rel}({", ".join(chosen_decl_args)})')
+            lines.append(
+                f'{chosen_rel}({", ".join([*key_vars, "A"])}) :- '
+                f'{cand_rel}(A,{", ".join([*key_vars, "Ts"])}), '
+                f'{max_ts_rel}({", ".join([*key_vars, "Ts"])}), '
+                f'!{better_rel}({", ".join([*key_vars, "A"])}).'
+            )
+            lines.append('')
+
+            current_head = f'{current_pred}({", ".join(["E", *current_value_vars])})'
+            current_body_parts = [
+                f'{chosen_rel}({", ".join([*key_vars, "A"])})',
+                *[
+                    f'claim_arg(A,"{idx}",{value_var},TagCurOut{idx})'
+                    for idx, value_var in enumerate(current_value_vars)
+                ],
+            ]
+            lines.append(f'{current_head} :- {", ".join(current_body_parts)}.')
             lines.append("")
             continue
 

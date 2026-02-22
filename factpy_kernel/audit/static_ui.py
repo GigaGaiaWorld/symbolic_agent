@@ -1,0 +1,903 @@
+from __future__ import annotations
+
+import json
+from html import escape
+from pathlib import Path
+from typing import Any
+from urllib.parse import quote
+
+from .assertions import load_assertion_index
+from .dto import build_decision_detail_dto, build_run_detail_dto, build_run_list_dto
+from .query import AuditQuery
+from .reader import load_audit_package
+
+
+def render_audit_static_site(package_dir: str | Path, out_dir: str | Path) -> dict[str, Any]:
+    data = load_audit_package(package_dir)
+    query = AuditQuery(data)
+    root = Path(out_dir)
+    runs_dir = root / "runs"
+    decisions_dir = root / "decisions"
+    assertions_dir = root / "assertions"
+    indexes_dir = root / "indexes"
+    root.mkdir(parents=True, exist_ok=True)
+    runs_dir.mkdir(parents=True, exist_ok=True)
+    decisions_dir.mkdir(parents=True, exist_ok=True)
+    assertions_dir.mkdir(parents=True, exist_ok=True)
+    indexes_dir.mkdir(parents=True, exist_ok=True)
+
+    run_list = build_run_list_dto(query)
+    assertion_index = load_assertion_index(data)
+    run_ids: list[str] = []
+    decision_ids: set[str] = set()
+    assertion_ids = sorted(assertion_index.claims.keys())
+
+    for asrt_id in assertion_ids:
+        detail = assertion_index.get_assertion_detail(asrt_id)
+        if detail is None:
+            continue
+        page = _render_assertion_detail_page(detail)
+        (assertions_dir / f"{_slug_id(asrt_id)}.html").write_text(page, encoding="utf-8")
+
+    for run in run_list["runs"]:
+        run_id = run.get("run_id")
+        if not isinstance(run_id, str) or not run_id:
+            continue
+        run_ids.append(run_id)
+        run_detail = build_run_detail_dto(query, run_id)
+        run_page = _render_run_detail_page(run_detail, assertion_index=assertion_index)
+        (runs_dir / f"{_slug_id(run_id)}.html").write_text(run_page, encoding="utf-8")
+        for decision_id in run_detail.get("decision_ids", []):
+            if isinstance(decision_id, str) and decision_id:
+                decision_ids.add(decision_id)
+
+    for decision_row in query.list_decisions():
+        decision_id = decision_row.get("decision_id")
+        if isinstance(decision_id, str) and decision_id:
+            decision_ids.add(decision_id)
+
+    for decision_id in sorted(decision_ids):
+        decision_detail = build_decision_detail_dto(query, decision_id)
+        page = _render_decision_detail_page(decision_detail, assertion_index=assertion_index)
+        (decisions_dir / f"{_slug_id(decision_id)}.html").write_text(page, encoding="utf-8")
+
+    index_pages = _render_filter_index_pages(query)
+    for rel_name, html in index_pages.items():
+        (indexes_dir / rel_name).write_text(html, encoding="utf-8")
+
+    index_html = _render_index_page(run_list, index_pages=sorted(index_pages.keys()))
+    (root / "index.html").write_text(index_html, encoding="utf-8")
+    (root / "search.html").write_text(_render_search_page(), encoding="utf-8")
+    ui_index_payload = _build_ui_index_payload(
+        query=query,
+        run_list=run_list,
+        run_ids=sorted(set(run_ids)),
+        decision_ids=sorted(decision_ids),
+        assertion_ids=assertion_ids,
+        index_pages=sorted(index_pages.keys()),
+    )
+    (root / "ui_index.json").write_text(
+        json.dumps(ui_index_payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    site_manifest = {
+        "audit_ui_site_version": "audit_ui_site_v1",
+        "package_kind": data.manifest.get("package_kind"),
+        "run_count": len(run_ids),
+        "decision_count": len(decision_ids),
+        "assertion_count": len(assertion_ids),
+        "runs": [f"runs/{_slug_id(run_id)}.html" for run_id in sorted(set(run_ids))],
+        "assertions": [f"assertions/{_slug_id(asrt_id)}.html" for asrt_id in assertion_ids],
+        "indexes": [f"indexes/{name}" for name in sorted(index_pages.keys())],
+        "index": "index.html",
+        "search": "search.html",
+        "ui_index": "ui_index.json",
+    }
+    (root / "site_manifest.json").write_text(
+        json.dumps(site_manifest, ensure_ascii=False, sort_keys=True, separators=(",", ":")) + "\n",
+        encoding="utf-8",
+    )
+    return site_manifest
+
+
+def _render_index_page(run_list: dict[str, Any], *, index_pages: list[str]) -> str:
+    rows = []
+    for run in run_list.get("runs", []):
+        if not isinstance(run, dict):
+            continue
+        run_id = str(run.get("run_id", ""))
+        href = f"runs/{_slug_id(run_id)}.html"
+        rows.append(
+            "<tr>"
+            f"<td><a href='{escape(href, quote=True)}'>{escape(run_id)}</a></td>"
+            f"<td>{escape(str(run.get('claim_count', 0)))}</td>"
+            f"<td>{escape(str(run.get('decision_count', 0)))}</td>"
+            f"<td>{escape(str(run.get('error_count', 0)))}</td>"
+            f"<td>{escape(str(run.get('event_ts_max')))}</td>"
+            "</tr>"
+        )
+    body = "".join(rows) if rows else "<tr><td colspan='5'>No runs</td></tr>"
+    return _html_page(
+        title="Audit Runs",
+        body=(
+            "<h1>Audit Runs</h1>"
+            "<p><a href='search.html'>Search</a></p>"
+            "<h2>Indexes</h2>"
+            f"<ul>{''.join(_index_page_links(index_pages)) if index_pages else '<li>None</li>'}</ul>"
+            "<h2>Runs</h2>"
+            "<table>"
+            "<thead><tr><th>Run</th><th>Claims</th><th>Decisions</th><th>Errors</th><th>Last Event</th></tr></thead>"
+            f"<tbody>{body}</tbody>"
+            "</table>"
+        ),
+    )
+
+
+def _render_run_detail_page(
+    payload: dict[str, Any],
+    *,
+    assertion_index,
+) -> str:
+    run_id = str(payload.get("run_id", ""))
+    stats = payload.get("stats") if isinstance(payload.get("stats"), dict) else {}
+    decision_links = []
+    for decision in payload.get("decisions", []):
+        if not isinstance(decision, dict):
+            continue
+        decision_id = decision.get("decision_id")
+        if not isinstance(decision_id, str):
+            continue
+        href = f"../decisions/{_slug_id(decision_id)}.html"
+        decision_links.append(
+            "<li>"
+            f"<a href='{escape(href, quote=True)}'>{escape(decision_id)}</a>"
+            f" [{escape(str(decision.get('event_kind')))}]"
+            "</li>"
+        )
+    timeline_rows = []
+    for row in payload.get("timeline", []):
+        if not isinstance(row, dict):
+            continue
+        timeline_rows.append(
+            "<tr>"
+            f"<td>{escape(str(row.get('event_ts')))}</td>"
+            f"<td>{escape(str(row.get('entry_kind')))}</td>"
+            f"<td>{escape(str(row.get('event_kind')))}</td>"
+            f"<td>{escape(str(row.get('decision_id')))}</td>"
+            "</tr>"
+        )
+    materialization_rows = []
+    assertion_summary_blocks = []
+    rendered_assertions: set[str] = set()
+    for row in payload.get("materializations", []):
+        if not isinstance(row, dict):
+            continue
+        asrt_id = row.get("asrt_id")
+        materialize_id = row.get("materialize_id")
+        asrt_cell = escape(str(asrt_id))
+        if isinstance(asrt_id, str) and asrt_id:
+            asrt_href = f"../assertions/{_slug_id(asrt_id)}.html"
+            asrt_cell = f"<a href='{escape(asrt_href, quote=True)}'>{escape(asrt_id)}</a>"
+        materialization_rows.append(
+            "<tr>"
+            f"<td>{escape(str(materialize_id))}</td>"
+            f"<td>{asrt_cell}</td>"
+            f"<td>{escape(str(row.get('pred_id')))}</td>"
+            f"<td>{escape(str(row.get('ingested_at')))}</td>"
+            "</tr>"
+        )
+        if isinstance(asrt_id, str) and asrt_id and asrt_id not in rendered_assertions:
+            rendered_assertions.add(asrt_id)
+            detail = assertion_index.get_assertion_detail(asrt_id)
+            if isinstance(detail, dict):
+                assertion_summary_blocks.append(_render_assertion_summary_block(detail, "../assertions"))
+    return _html_page(
+        title=f"Run {run_id}",
+        body=(
+            f"<h1>Run {escape(run_id)}</h1>"
+            "<p><a href='../index.html'>Back to runs</a></p>"
+            "<h2>Stats</h2>"
+            "<ul>"
+            f"<li>materializations={escape(str(stats.get('materialization_count', 0)))}</li>"
+            f"<li>candidates={escape(str(stats.get('candidate_count', 0)))}</li>"
+            f"<li>decisions={escape(str(stats.get('decision_count', 0)))}</li>"
+            f"<li>failures={escape(str(stats.get('failure_count', 0)))}</li>"
+            "</ul>"
+            "<h2>Decisions</h2>"
+            f"<ul>{''.join(decision_links) if decision_links else '<li>None</li>'}</ul>"
+            "<h2>Materializations</h2>"
+            "<table><thead><tr><th>Materialize</th><th>Assertion</th><th>Pred</th><th>Ts</th></tr></thead>"
+            f"<tbody>{''.join(materialization_rows) if materialization_rows else '<tr><td colspan=4>None</td></tr>'}</tbody></table>"
+            "<h2>Assertion Summaries</h2>"
+            f"{''.join(assertion_summary_blocks) if assertion_summary_blocks else '<p>None</p>'}"
+            "<h2>Timeline</h2>"
+            "<table><thead><tr><th>Ts</th><th>Kind</th><th>Event</th><th>Decision</th></tr></thead>"
+            f"<tbody>{''.join(timeline_rows) if timeline_rows else '<tr><td colspan=4>None</td></tr>'}</tbody></table>"
+        ),
+    )
+
+
+def _render_decision_detail_page(
+    payload: dict[str, Any],
+    *,
+    assertion_index,
+) -> str:
+    decision = payload.get("decision") if isinstance(payload.get("decision"), dict) else {}
+    decision_id = str(payload.get("decision_id", ""))
+    related = payload.get("related") if isinstance(payload.get("related"), dict) else {}
+    runs = _sorted_unique_strings(related.get("run_ids"))
+    mats = _sorted_unique_strings(related.get("materialize_ids"))
+    asrt_ids = _sorted_unique_strings(
+        [row.get("asrt_id") for row in payload.get("materializations", []) if isinstance(row, dict)]
+        + [row.get("asrt_id") for row in payload.get("candidates", []) if isinstance(row, dict)]
+        + ([decision.get("asrt_id")] if isinstance(decision.get("asrt_id"), str) else [])
+        + (
+            [value for value in decision.get("candidate_asrt_ids", []) if isinstance(value, str)]
+            if isinstance(decision.get("candidate_asrt_ids"), list)
+            else []
+        )
+    )
+    assertion_links = []
+    for asrt_id in asrt_ids:
+        href = f"../assertions/{_slug_id(asrt_id)}.html"
+        assertion_links.append(f"<li><a href='{escape(href, quote=True)}'>{escape(asrt_id)}</a></li>")
+    assertion_summary_blocks = []
+    for asrt_id in asrt_ids:
+        detail = assertion_index.get_assertion_detail(asrt_id)
+        if isinstance(detail, dict):
+            assertion_summary_blocks.append(_render_assertion_summary_block(detail, "../assertions"))
+    return _html_page(
+        title=f"Decision {decision_id}",
+        body=(
+            f"<h1>Decision {escape(decision_id)}</h1>"
+            "<p><a href='../index.html'>Back to runs</a></p>"
+            "<h2>Summary</h2>"
+            "<ul>"
+            f"<li>event_source={escape(str(decision.get('event_source')))}</li>"
+            f"<li>event_kind={escape(str(decision.get('event_kind')))}</li>"
+            f"<li>event_ts={escape(str(decision.get('event_ts')))}</li>"
+            "</ul>"
+            "<h2>Related</h2>"
+            f"<p>runs={escape(','.join(runs)) or '-'}</p>"
+            f"<p>materialize_ids={escape(','.join(mats)) or '-'}</p>"
+            f"<p>assertions={escape(str(len(asrt_ids)))}</p>"
+            f"<p>candidates={escape(str(len(payload.get('candidates', []))))}</p>"
+            f"<p>failures={escape(str(len(payload.get('failures', []))))}</p>"
+            "<h2>Assertions</h2>"
+            f"<ul>{''.join(assertion_links) if assertion_links else '<li>None</li>'}</ul>"
+            "<h2>Assertion Summaries</h2>"
+            f"{''.join(assertion_summary_blocks) if assertion_summary_blocks else '<p>None</p>'}"
+            "<h2>Payload</h2>"
+            f"<pre>{escape(json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2))}</pre>"
+        ),
+    )
+
+
+def _render_assertion_detail_page(payload: dict[str, Any]) -> str:
+    claim = payload.get("claim") if isinstance(payload.get("claim"), dict) else {}
+    asrt_id = str(payload.get("asrt_id", ""))
+    claim_args_rows = []
+    for row in payload.get("claim_args", []):
+        if not isinstance(row, dict):
+            continue
+        claim_args_rows.append(
+            "<tr>"
+            f"<td>{escape(str(row.get('idx')))}</td>"
+            f"<td>{escape(str(row.get('tag')))}</td>"
+            f"<td>{escape(str(row.get('val')))}</td>"
+            "</tr>"
+        )
+    meta_sections = []
+    meta = payload.get("meta")
+    if isinstance(meta, dict):
+        for kind in sorted(meta):
+            rows = meta.get(kind)
+            if not isinstance(rows, list):
+                continue
+            items = []
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                items.append(
+                    "<tr>"
+                    f"<td>{escape(str(row.get('key')))}</td>"
+                    f"<td>{escape(str(row.get('value')))}</td>"
+                    "</tr>"
+                )
+            meta_sections.append(
+                f"<h3>meta_{escape(kind)}</h3>"
+                "<table><thead><tr><th>key</th><th>value</th></tr></thead>"
+                f"<tbody>{''.join(items) if items else '<tr><td colspan=2>None</td></tr>'}</tbody></table>"
+            )
+    revoked_by = _sorted_unique_strings(payload.get("revoked_by"))
+    revokes = _sorted_unique_strings(payload.get("revokes"))
+    return _html_page(
+        title=f"Assertion {asrt_id}",
+        body=(
+            f"<h1>Assertion {escape(asrt_id)}</h1>"
+            "<p><a href='../index.html'>Back to runs</a></p>"
+            "<h2>Claim</h2>"
+            "<ul>"
+            f"<li>pred_id={escape(str(claim.get('pred_id')))}</li>"
+            f"<li>e_ref={escape(str(claim.get('e_ref')))}</li>"
+            f"<li>tup_digest={escape(str(claim.get('tup_digest')))}</li>"
+            f"<li>is_revoked={escape(str(payload.get('is_revoked')))}</li>"
+            "</ul>"
+            "<h2>claim_arg</h2>"
+            "<table><thead><tr><th>idx</th><th>tag</th><th>val</th></tr></thead>"
+            f"<tbody>{''.join(claim_args_rows) if claim_args_rows else '<tr><td colspan=3>None</td></tr>'}</tbody></table>"
+            "<h2>Revocation</h2>"
+            f"<p>revoked_by={escape(','.join(revoked_by)) or '-'}</p>"
+            f"<p>revokes={escape(','.join(revokes)) or '-'}</p>"
+            "<h2>Meta</h2>"
+            f"{''.join(meta_sections) if meta_sections else '<p>None</p>'}"
+            "<h2>Payload</h2>"
+            f"<pre>{escape(json.dumps(payload, ensure_ascii=False, sort_keys=True, indent=2))}</pre>"
+        ),
+    )
+
+
+def _render_filter_index_pages(query: AuditQuery) -> dict[str, str]:
+    decisions = query.list_decisions()
+    failures = query.list_failures()
+    materializations = query.list_materializations()
+
+    by_event_kind: dict[str, list[dict[str, Any]]] = {}
+    for row in decisions:
+        key = row.get("event_kind")
+        key_text = key if isinstance(key, str) and key else "<none>"
+        by_event_kind.setdefault(key_text, []).append(row)
+
+    by_error_class: dict[str, list[dict[str, Any]]] = {}
+    for row in failures:
+        key = row.get("error_class")
+        key_text = key if isinstance(key, str) and key else "<none>"
+        by_error_class.setdefault(key_text, []).append(row)
+
+    by_pred_id_decisions: dict[str, list[dict[str, Any]]] = {}
+    by_pred_id_materializations: dict[str, list[dict[str, Any]]] = {}
+    for row in decisions:
+        pred_id = row.get("pred_id")
+        if isinstance(pred_id, str) and pred_id:
+            by_pred_id_decisions.setdefault(pred_id, []).append(row)
+    for row in materializations:
+        pred_id = row.get("pred_id")
+        if isinstance(pred_id, str) and pred_id:
+            by_pred_id_materializations.setdefault(pred_id, []).append(row)
+
+    return {
+        "event_kinds.html": _render_event_kind_index_page(by_event_kind),
+        "error_classes.html": _render_error_class_index_page(by_error_class),
+        "predicates.html": _render_predicate_index_page(by_pred_id_decisions, by_pred_id_materializations),
+    }
+
+
+def _build_ui_index_payload(
+    *,
+    query: AuditQuery,
+    run_list: dict[str, Any],
+    run_ids: list[str],
+    decision_ids: list[str],
+    assertion_ids: list[str],
+    index_pages: list[str],
+) -> dict[str, Any]:
+    decisions = query.list_decisions()
+    failures = query.list_failures()
+    materializations = query.list_materializations()
+    candidates = query.list_candidates()
+
+    event_kind_counts: dict[str, int] = {}
+    for row in decisions:
+        key = row.get("event_kind")
+        if isinstance(key, str) and key:
+            event_kind_counts[key] = event_kind_counts.get(key, 0) + 1
+
+    error_class_counts: dict[str, int] = {}
+    for row in failures:
+        key = row.get("error_class")
+        if isinstance(key, str) and key:
+            error_class_counts[key] = error_class_counts.get(key, 0) + 1
+
+    predicate_decision_counts: dict[str, int] = {}
+    predicate_materialize_counts: dict[str, int] = {}
+    for row in decisions:
+        pred_id = row.get("pred_id")
+        if isinstance(pred_id, str) and pred_id:
+            predicate_decision_counts[pred_id] = predicate_decision_counts.get(pred_id, 0) + 1
+    for row in materializations:
+        pred_id = row.get("pred_id")
+        if isinstance(pred_id, str) and pred_id:
+            predicate_materialize_counts[pred_id] = predicate_materialize_counts.get(pred_id, 0) + 1
+
+    run_rows = []
+    for row in run_list.get("runs", []):
+        if not isinstance(row, dict):
+            continue
+        run_id = row.get("run_id")
+        if not isinstance(run_id, str) or not run_id:
+            continue
+        run_rows.append(
+            {
+                "run_id": run_id,
+                "path": f"runs/{_slug_id(run_id)}.html",
+                "claim_count": row.get("claim_count", 0),
+                "decision_count": row.get("decision_count", 0),
+                "error_count": row.get("error_count", 0),
+                "has_failures": bool(row.get("has_failures")),
+                "event_ts_min": row.get("event_ts_min"),
+                "event_ts_max": row.get("event_ts_max"),
+            }
+        )
+
+    run_pages = {run_id: f"runs/{_slug_id(run_id)}.html" for run_id in run_ids}
+    decision_pages = {decision_id: f"decisions/{_slug_id(decision_id)}.html" for decision_id in decision_ids}
+    assertion_pages = {asrt_id: f"assertions/{_slug_id(asrt_id)}.html" for asrt_id in assertion_ids}
+
+    run_to_decisions: dict[str, set[str]] = {run_id: set() for run_id in run_ids}
+    decision_to_runs: dict[str, set[str]] = {decision_id: set() for decision_id in decision_ids}
+    decision_to_assertions: dict[str, set[str]] = {decision_id: set() for decision_id in decision_ids}
+    run_to_assertions: dict[str, set[str]] = {run_id: set() for run_id in run_ids}
+    assertion_to_runs: dict[str, set[str]] = {asrt_id: set() for asrt_id in assertion_ids}
+    assertion_to_decisions: dict[str, set[str]] = {asrt_id: set() for asrt_id in assertion_ids}
+
+    candidates_by_decision: dict[str, list[dict[str, Any]]] = {}
+    for row in candidates:
+        decision_id = row.get("decision_id")
+        if isinstance(decision_id, str) and decision_id:
+            candidates_by_decision.setdefault(decision_id, []).append(row)
+
+    for row in materializations:
+        asrt_id = row.get("asrt_id")
+        run_id = row.get("run_id")
+        if isinstance(asrt_id, str) and asrt_id and isinstance(run_id, str) and run_id:
+            if run_id in run_to_assertions:
+                run_to_assertions[run_id].add(asrt_id)
+            if asrt_id in assertion_to_runs:
+                assertion_to_runs[asrt_id].add(run_id)
+
+    for row in decisions:
+        decision_id = row.get("decision_id")
+        if not isinstance(decision_id, str) or not decision_id:
+            continue
+
+        linked_run_ids: set[str] = set()
+        run_id = row.get("run_id")
+        if isinstance(run_id, str) and run_id:
+            linked_run_ids.add(run_id)
+        for value in row.get("run_ids", []) if isinstance(row.get("run_ids"), list) else []:
+            if isinstance(value, str) and value:
+                linked_run_ids.add(value)
+
+        for linked_run_id in linked_run_ids:
+            if linked_run_id in run_to_decisions:
+                run_to_decisions[linked_run_id].add(decision_id)
+            if decision_id in decision_to_runs:
+                decision_to_runs[decision_id].add(linked_run_id)
+
+        linked_asrt_ids: set[str] = set()
+        asrt_id = row.get("asrt_id")
+        if isinstance(asrt_id, str) and asrt_id:
+            linked_asrt_ids.add(asrt_id)
+        for value in row.get("candidate_asrt_ids", []) if isinstance(row.get("candidate_asrt_ids"), list) else []:
+            if isinstance(value, str) and value:
+                linked_asrt_ids.add(value)
+        for cand_row in candidates_by_decision.get(decision_id, []):
+            cand_asrt_id = cand_row.get("asrt_id")
+            if isinstance(cand_asrt_id, str) and cand_asrt_id:
+                linked_asrt_ids.add(cand_asrt_id)
+
+        for linked_asrt_id in linked_asrt_ids:
+            if decision_id in decision_to_assertions:
+                decision_to_assertions[decision_id].add(linked_asrt_id)
+            if linked_asrt_id in assertion_to_decisions:
+                assertion_to_decisions[linked_asrt_id].add(decision_id)
+            for linked_run_id in linked_run_ids:
+                if linked_run_id in run_to_assertions:
+                    run_to_assertions[linked_run_id].add(linked_asrt_id)
+                if linked_asrt_id in assertion_to_runs:
+                    assertion_to_runs[linked_asrt_id].add(linked_run_id)
+
+    predicates = sorted(set(predicate_decision_counts.keys()) | set(predicate_materialize_counts.keys()))
+    return {
+        "audit_ui_index_version": "audit_ui_index_v1",
+        "counts": {
+            "runs": len(run_ids),
+            "decisions": len(decision_ids),
+            "assertions": len(assertion_ids),
+            "failures": len(failures),
+        },
+        "links": {
+            "index": "index.html",
+            "search": "search.html",
+            "site_manifest": "site_manifest.json",
+            "indexes": [f"indexes/{name}" for name in index_pages],
+        },
+        "lookup": {
+            "run_pages": run_pages,
+            "decision_pages": decision_pages,
+            "assertion_pages": assertion_pages,
+            "run_to_decisions": {k: sorted(v) for k, v in sorted(run_to_decisions.items())},
+            "run_to_assertions": {k: sorted(v) for k, v in sorted(run_to_assertions.items())},
+            "decision_to_runs": {k: sorted(v) for k, v in sorted(decision_to_runs.items())},
+            "decision_to_assertions": {k: sorted(v) for k, v in sorted(decision_to_assertions.items())},
+            "assertion_to_runs": {k: sorted(v) for k, v in sorted(assertion_to_runs.items())},
+            "assertion_to_decisions": {k: sorted(v) for k, v in sorted(assertion_to_decisions.items())},
+        },
+        "runs": run_rows,
+        "filters": {
+            "event_kinds": [
+                {"event_kind": key, "count": event_kind_counts[key], "page": "indexes/event_kinds.html"}
+                for key in sorted(event_kind_counts)
+            ],
+            "error_classes": [
+                {"error_class": key, "count": error_class_counts[key], "page": "indexes/error_classes.html"}
+                for key in sorted(error_class_counts)
+            ],
+            "predicates": [
+                {
+                    "pred_id": pred_id,
+                    "decision_count": predicate_decision_counts.get(pred_id, 0),
+                    "materialization_count": predicate_materialize_counts.get(pred_id, 0),
+                    "page": "indexes/predicates.html",
+                }
+                for pred_id in predicates
+            ],
+        },
+    }
+
+
+def _render_search_page() -> str:
+    script = """
+(() => {
+  const qInput = document.getElementById("q");
+  const typeInput = document.getElementById("type");
+  const statusEl = document.getElementById("status");
+  const resultsEl = document.getElementById("results");
+  const countsEl = document.getElementById("counts");
+
+  const qp = new URLSearchParams(window.location.search);
+  if (qp.has("q")) qInput.value = qp.get("q") || "";
+  if (qp.has("type")) typeInput.value = qp.get("type") || "all";
+
+  function esc(s) {
+    return String(s)
+      .replace(/&/g, "&amp;")
+      .replace(/</g, "&lt;")
+      .replace(/>/g, "&gt;")
+      .replace(/"/g, "&quot;")
+      .replace(/'/g, "&#39;");
+  }
+
+  function rowLink(path, label, meta) {
+    return "<li><a href='" + esc(path) + "'>" + esc(label) + "</a>" +
+      (meta ? " <span style='color:#666'>" + esc(meta) + "</span>" : "") +
+      "</li>";
+  }
+
+  const TYPE_MAP = {
+    all: null,
+    run: "runs",
+    decision: "decisions",
+    assertion: "assertions",
+    pred_id: "predicates",
+    event_kind: "eventKinds",
+    error_class: "errorClasses",
+  };
+
+  function render(index, q, typeFilter) {
+    const needle = q.trim().toLowerCase();
+    const selectedBucket = TYPE_MAP[typeFilter] || null;
+    if (!needle) {
+      countsEl.textContent = "Type to search runs / decisions / assertions / predicates / event kinds / error classes";
+      resultsEl.innerHTML = "";
+      return;
+    }
+
+    const hits = { runs: [], decisions: [], assertions: [], predicates: [], eventKinds: [], errorClasses: [] };
+    for (const run of (index.runs || [])) {
+      if (String(run.run_id || "").toLowerCase().includes(needle)) {
+        hits.runs.push(run);
+      }
+    }
+    for (const [decisionId, path] of Object.entries((index.lookup || {}).decision_pages || {})) {
+      if (decisionId.toLowerCase().includes(needle)) {
+        hits.decisions.push({ decision_id: decisionId, path });
+      }
+    }
+    for (const [asrtId, path] of Object.entries((index.lookup || {}).assertion_pages || {})) {
+      if (asrtId.toLowerCase().includes(needle)) {
+        hits.assertions.push({ asrt_id: asrtId, path });
+      }
+    }
+    for (const row of (((index.filters || {}).predicates) || [])) {
+      if (String(row.pred_id || "").toLowerCase().includes(needle)) {
+        hits.predicates.push(row);
+      }
+    }
+    for (const row of (((index.filters || {}).event_kinds) || [])) {
+      if (String(row.event_kind || "").toLowerCase().includes(needle)) {
+        hits.eventKinds.push(row);
+      }
+    }
+    for (const row of (((index.filters || {}).error_classes) || [])) {
+      if (String(row.error_class || "").toLowerCase().includes(needle)) {
+        hits.errorClasses.push(row);
+      }
+    }
+
+    const visibleBuckets = selectedBucket ? [selectedBucket] : ["runs","decisions","assertions","predicates","eventKinds","errorClasses"];
+    const total = visibleBuckets.reduce((n, key) => n + (hits[key] || []).length, 0);
+    countsEl.textContent = `Results: ${total} (type=${typeFilter || "all"})`;
+
+    const sections = [];
+    function maybePush(bucketKey, html) {
+      if (visibleBuckets.includes(bucketKey)) sections.push(html);
+    }
+    maybePush("runs", "<h2>Runs</h2><ul>" + (hits.runs.map(r => rowLink(r.path, r.run_id, `claims=${r.claim_count} decisions=${r.decision_count} errors=${r.error_count}`)).join("") || "<li>None</li>") + "</ul>");
+    maybePush("decisions", "<h2>Decisions</h2><ul>" + (hits.decisions.map(r => rowLink(r.path, r.decision_id, "")).join("") || "<li>None</li>") + "</ul>");
+    maybePush("assertions", "<h2>Assertions</h2><ul>" + (hits.assertions.map(r => rowLink(r.path, r.asrt_id, "")).join("") || "<li>None</li>") + "</ul>");
+    maybePush("predicates", "<h2>Predicates</h2><ul>" + (hits.predicates.map(r => rowLink(r.page, r.pred_id, `decisions=${r.decision_count} materializations=${r.materialization_count}`)).join("") || "<li>None</li>") + "</ul>");
+    maybePush("eventKinds", "<h2>Event Kinds</h2><ul>" + (hits.eventKinds.map(r => rowLink(r.page, r.event_kind, `count=${r.count}`)).join("") || "<li>None</li>") + "</ul>");
+    maybePush("errorClasses", "<h2>Error Classes</h2><ul>" + (hits.errorClasses.map(r => rowLink(r.page, r.error_class, `count=${r.count}`)).join("") || "<li>None</li>") + "</ul>");
+    resultsEl.innerHTML = sections.join("");
+  }
+
+  function syncUrl() {
+    const p = new URLSearchParams();
+    if (qInput.value) p.set("q", qInput.value);
+    if (typeInput.value && typeInput.value !== "all") p.set("type", typeInput.value);
+    const qs = p.toString();
+    const next = qs ? ("?" + qs) : window.location.pathname;
+    history.replaceState(null, "", next);
+  }
+
+  fetch("ui_index.json")
+    .then(r => {
+      if (!r.ok) throw new Error("HTTP " + r.status);
+      return r.json();
+    })
+    .then(index => {
+      statusEl.textContent = "Loaded ui_index.json";
+      render(index, qInput.value || "", typeInput.value || "all");
+      qInput.addEventListener("input", () => {
+        syncUrl();
+        render(index, qInput.value || "", typeInput.value || "all");
+      });
+      typeInput.addEventListener("change", () => {
+        syncUrl();
+        render(index, qInput.value || "", typeInput.value || "all");
+      });
+    })
+    .catch(err => {
+      statusEl.textContent = "Failed to load ui_index.json: " + err;
+    });
+})();
+""".strip()
+    return _html_page(
+        title="Audit Search",
+        body=(
+            "<h1>Audit Search</h1>"
+            "<p><a href='index.html'>Back to runs</a></p>"
+            "<p><label for='q'>Search</label> <input id='q' type='search' placeholder='run_id / decision_id / asrt_id / pred_id' style='min-width:420px'> "
+            "<label for='type'>Type</label> "
+            "<select id='type'>"
+            "<option value='all'>all</option>"
+            "<option value='run'>run</option>"
+            "<option value='decision'>decision</option>"
+            "<option value='assertion'>assertion</option>"
+            "<option value='pred_id'>pred_id</option>"
+            "<option value='event_kind'>event_kind</option>"
+            "<option value='error_class'>error_class</option>"
+            "</select></p>"
+            "<p id='status'>Loading ui_index.json...</p>"
+            "<p id='counts'></p>"
+            "<div id='results'></div>"
+            f"<script>{script}</script>"
+        ),
+    )
+
+
+def _render_event_kind_index_page(groups: dict[str, list[dict[str, Any]]]) -> str:
+    blocks: list[str] = []
+    for event_kind in sorted(groups):
+        rows = sorted(groups[event_kind], key=lambda r: (str(r.get("decision_id", "")), str(r.get("event_ts", ""))))
+        search_href = _search_href(event_kind, "event_kind", prefix="..")
+        items = []
+        for row in rows:
+            decision_id = str(row.get("decision_id", ""))
+            run_ids = _sorted_unique_strings(row.get("run_ids"))
+            href = f"../decisions/{_slug_id(decision_id)}.html" if decision_id else ""
+            decision_link = (
+                f"<a href='{escape(href, quote=True)}'>{escape(decision_id)}</a>" if decision_id else "-"
+            )
+            items.append(
+                "<tr>"
+                f"<td>{decision_link}</td>"
+                f"<td>{escape(','.join(run_ids)) or '-'}</td>"
+                f"<td>{escape(str(row.get('pred_id')))}</td>"
+                f"<td>{escape(str(row.get('event_ts')))}</td>"
+                "</tr>"
+            )
+        blocks.append(
+            f"<h3>{escape(event_kind)} ({len(rows)})</h3>"
+            f"<p><a href='{escape(search_href, quote=True)}'>Open in search</a></p>"
+            "<table><thead><tr><th>Decision</th><th>Runs</th><th>Pred</th><th>Ts</th></tr></thead>"
+            f"<tbody>{''.join(items) if items else '<tr><td colspan=4>None</td></tr>'}</tbody></table>"
+        )
+    return _html_page(
+        title="Event Kind Index",
+        body=(
+            "<h1>Decision Event Kinds</h1>"
+            "<p><a href='../index.html'>Back to runs</a></p>"
+            f"{''.join(blocks) if blocks else '<p>No decisions</p>'}"
+        ),
+    )
+
+
+def _render_error_class_index_page(groups: dict[str, list[dict[str, Any]]]) -> str:
+    blocks: list[str] = []
+    for error_class in sorted(groups):
+        rows = sorted(groups[error_class], key=lambda r: (str(r.get("decision_id", "")), str(r.get("event_ts", ""))))
+        search_href = _search_href(error_class, "error_class", prefix="..")
+        items = []
+        for row in rows:
+            decision_id = str(row.get("decision_id", ""))
+            href = f"../decisions/{_slug_id(decision_id)}.html" if decision_id else ""
+            decision_link = (
+                f"<a href='{escape(href, quote=True)}'>{escape(decision_id)}</a>" if decision_id else "-"
+            )
+            items.append(
+                "<tr>"
+                f"<td>{decision_link}</td>"
+                f"<td>{escape(','.join(_sorted_unique_strings(row.get('run_ids')))) or '-'}</td>"
+                f"<td>{escape(str(row.get('event_kind')))}</td>"
+                f"<td>{escape(str(row.get('message')))}</td>"
+                "</tr>"
+            )
+        blocks.append(
+            f"<h3>{escape(error_class)} ({len(rows)})</h3>"
+            f"<p><a href='{escape(search_href, quote=True)}'>Open in search</a></p>"
+            "<table><thead><tr><th>Decision</th><th>Runs</th><th>Event</th><th>Message</th></tr></thead>"
+            f"<tbody>{''.join(items) if items else '<tr><td colspan=4>None</td></tr>'}</tbody></table>"
+        )
+    return _html_page(
+        title="Error Class Index",
+        body=(
+            "<h1>Failure Error Classes</h1>"
+            "<p><a href='../index.html'>Back to runs</a></p>"
+            f"{''.join(blocks) if blocks else '<p>No failures</p>'}"
+        ),
+    )
+
+
+def _render_predicate_index_page(
+    decision_groups: dict[str, list[dict[str, Any]]],
+    materialization_groups: dict[str, list[dict[str, Any]]],
+) -> str:
+    pred_ids = sorted(set(decision_groups.keys()) | set(materialization_groups.keys()))
+    blocks: list[str] = []
+    for pred_id in pred_ids:
+        decisions = sorted(decision_groups.get(pred_id, []), key=lambda r: str(r.get("decision_id", "")))
+        materializations = sorted(
+            materialization_groups.get(pred_id, []),
+            key=lambda r: (str(r.get("materialize_id", "")), str(r.get("asrt_id", ""))),
+        )
+        search_href = _search_href(pred_id, "pred_id", prefix="..")
+        decision_items = []
+        for row in decisions:
+            decision_id = str(row.get("decision_id", ""))
+            href = f"../decisions/{_slug_id(decision_id)}.html" if decision_id else ""
+            decision_link = (
+                f"<a href='{escape(href, quote=True)}'>{escape(decision_id)}</a>" if decision_id else "-"
+            )
+            decision_items.append(
+                "<li>"
+                f"{decision_link} [{escape(str(row.get('event_kind')))}]"
+                "</li>"
+            )
+        materialization_items = []
+        for row in materializations:
+            asrt_id = row.get("asrt_id")
+            asrt_link = escape(str(asrt_id))
+            if isinstance(asrt_id, str) and asrt_id:
+                href = f"../assertions/{_slug_id(asrt_id)}.html"
+                asrt_link = f"<a href='{escape(href, quote=True)}'>{escape(asrt_id)}</a>"
+            materialization_items.append(
+                "<li>"
+                f"{escape(str(row.get('materialize_id')))} → {asrt_link}"
+                "</li>"
+            )
+        blocks.append(
+            f"<h3>{escape(pred_id)}</h3>"
+            f"<p><a href='{escape(search_href, quote=True)}'>Open in search</a></p>"
+            f"<p>decisions={len(decisions)} | materializations={len(materializations)}</p>"
+            "<h4>Decisions</h4>"
+            f"<ul>{''.join(decision_items) if decision_items else '<li>None</li>'}</ul>"
+            "<h4>Materializations</h4>"
+            f"<ul>{''.join(materialization_items) if materialization_items else '<li>None</li>'}</ul>"
+        )
+    return _html_page(
+        title="Predicate Index",
+        body=(
+            "<h1>Predicate Index</h1>"
+            "<p><a href='../index.html'>Back to runs</a></p>"
+            f"{''.join(blocks) if blocks else '<p>No predicate rows</p>'}"
+        ),
+    )
+
+
+def _index_page_links(index_pages: list[str]) -> list[str]:
+    pretty = {
+        "event_kinds.html": "Decision Event Kinds",
+        "error_classes.html": "Failure Error Classes",
+        "predicates.html": "Predicate Index",
+    }
+    out: list[str] = []
+    for name in index_pages:
+        href = f"indexes/{name}"
+        out.append(f"<li><a href='{escape(href, quote=True)}'>{escape(pretty.get(name, name))}</a></li>")
+    return out
+
+
+def _search_href(query_text: str, type_name: str, *, prefix: str = ".") -> str:
+    return f"{prefix}/search.html?q={quote(query_text, safe='')}&type={quote(type_name, safe='')}"
+
+
+def _render_assertion_summary_block(detail: dict[str, Any], assertions_href_prefix: str) -> str:
+    claim = detail.get("claim") if isinstance(detail.get("claim"), dict) else {}
+    asrt_id = str(detail.get("asrt_id", ""))
+    href = f"{assertions_href_prefix}/{_slug_id(asrt_id)}.html"
+    claim_args = detail.get("claim_args")
+    arg_summary_parts: list[str] = []
+    if isinstance(claim_args, list):
+        for row in claim_args[:3]:
+            if not isinstance(row, dict):
+                continue
+            arg_summary_parts.append(
+                f"{row.get('idx')}:{row.get('tag')}={row.get('val')}"
+            )
+    meta = detail.get("meta") if isinstance(detail.get("meta"), dict) else {}
+    source_value = _meta_summary_value(meta, "str", "source")
+    ingested_at_value = _meta_summary_value(meta, "time", "ingested_at")
+    return (
+        "<div style='border:1px solid #eee;padding:8px;margin:8px 0'>"
+        f"<p><strong><a href='{escape(href, quote=True)}'>{escape(asrt_id)}</a></strong></p>"
+        f"<p>pred={escape(str(claim.get('pred_id')))} | e_ref={escape(str(claim.get('e_ref')))}</p>"
+        f"<p>claim_arg={escape('; '.join(arg_summary_parts)) or '-'}</p>"
+        f"<p>source={escape(str(source_value))} | ingested_at={escape(str(ingested_at_value))} | revoked={escape(str(bool(detail.get('is_revoked'))))}</p>"
+        "</div>"
+    )
+
+
+def _meta_summary_value(meta: dict[str, Any], kind: str, key: str) -> Any:
+    rows = meta.get(kind)
+    if not isinstance(rows, list):
+        return None
+    for row in rows:
+        if isinstance(row, dict) and row.get("key") == key:
+            return row.get("value")
+    return None
+
+
+def _sorted_unique_strings(value: Any) -> list[str]:
+    if not isinstance(value, list):
+        return []
+    return sorted({item for item in value if isinstance(item, str)})
+
+
+def _slug_id(value: str) -> str:
+    return quote(value, safe="")
+
+
+def _html_page(*, title: str, body: str) -> str:
+    return (
+        "<!doctype html><html><head><meta charset='utf-8'>"
+        f"<title>{escape(title)}</title>"
+        "<style>"
+        "body{font-family:system-ui,Arial,sans-serif;margin:24px;line-height:1.4}"
+        "table{border-collapse:collapse;width:100%}th,td{border:1px solid #ddd;padding:6px;text-align:left}"
+        "th{background:#f5f5f5}code,pre{font-family:ui-monospace,Menlo,monospace}pre{overflow:auto;background:#fafafa;padding:12px;border:1px solid #eee}"
+        "</style></head><body>"
+        f"{body}"
+        "</body></html>"
+    )

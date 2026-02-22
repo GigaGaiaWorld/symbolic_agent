@@ -14,9 +14,11 @@ class PolicyIRValidationError(Exception):
 _REQUIRED_SCHEMA_PROTOCOL_KEYS = ("idref_v1", "tup_v1", "export_v1")
 
 
-def build_policy_ir_v1(schema_ir: dict) -> dict:
+def build_policy_ir_v1(schema_ir: dict, policy_mode: str = "edb") -> dict:
     if not isinstance(schema_ir, dict):
         raise PolicyIRValidationError("schema_ir must be dict")
+    if policy_mode not in {"edb", "idb"}:
+        raise PolicyIRValidationError("policy_mode must be 'edb' or 'idb'")
 
     schema_protocol = schema_ir.get("protocol_version")
     if not isinstance(schema_protocol, dict):
@@ -43,7 +45,7 @@ def build_policy_ir_v1(schema_ir: dict) -> dict:
             "strategy": "latest_by_ingested_at_then_min_assertion_id",
             "required_meta": ["ingested_at"],
         },
-        "policy_mode": "edb",
+        "policy_mode": policy_mode,
     }
 
 
